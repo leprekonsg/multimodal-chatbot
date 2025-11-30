@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knowledge Console</title>
+    
+    <!-- Distinctive typography: Crimson Pro + IBM Plex Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            /* Warm dark palette - avoiding cold blues */
+            --bg-deep: #0A0A0C;
+            --bg-primary: #111114;
+            --bg-elevated: #1A1A1E;
+            --bg-hover: #222228;
+            
+            /* Warm amber accent - distinctive, not generic */
+            --accent-primary: #D4A574;
+            --accent-glow: rgba(212, 165, 116, 0.15);
+            --accent-muted: #8B7355;
+            
+            /* Sage secondary - organic feel */
+            --sage: #6B8B6B;
+            --sage-muted: #4A634A;
+            
+            /* Warm text tones */
+            --text-primary: #F5F0E6;
+            --text-secondary: #A39B8B;
+            --text-muted: #6B6560;
+            
+            /* Borders */
+            --border-subtle: rgba(245, 240, 230, 0.08);
+            --border-accent: rgba(212, 165, 116, 0.3);
+            
+            /* Typography */
+            --font-display: 'Crimson Pro', Georgia, serif;
+            --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+            
+            /* Spacing */
+            --space-xs: 0.25rem;
+            --space-sm: 0.5rem;
+            --space-md: 1rem;
+            --space-lg: 1.5rem;
+            --space-xl: 2rem;
+            --space-2xl: 3rem;
+            
+            /* Radii */
+            --radius-sm: 4px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+        
+        body {
+            font-family: var(--font-mono);
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background: var(--bg-deep);
+            
+            /* Subtle noise texture */
+            background-image: 
+                radial-gradient(ellipse at 50% 0%, rgba(212, 165, 116, 0.03) 0%, transparent 60%),
+                url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            background-blend-mode: normal, overlay;
+        }
+        
+        /* App Layout */
+        .app {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            height: 100vh;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        
+        @media (max-width: 1024px) {
+            .app {
+                grid-template-columns: 1fr;
+            }
+            .sources-panel {
+                display: none;
+            }
+            .sources-panel.mobile-visible {
+                display: flex;
+                position: fixed;
+                inset: 0;
+                z-index: 100;
+                background: var(--bg-primary);
+            }
+        }
+        
+        /* Header */
+        .header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-md) var(--space-xl);
+            border-bottom: 1px solid var(--border-subtle);
+            background: var(--bg-primary);
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: var(--space-md);
+        }
+        
+        .logo-mark {
+            width: 32px;
+            height: 32px;
+            border: 2px solid var(--accent-primary);
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-display);
+            font-weight: 600;
+            font-size: 16px;
+            color: var(--accent-primary);
+        }
+        
+        .logo-text {
+            font-family: var(--font-display);
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+        
+        .header-meta {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        
+        /* Main Chat Area */
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 60px);
+            background: var(--bg-primary);
+        }
+        
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: var(--space-xl);
+            scroll-behavior: smooth;
+        }
+        
+        .messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        .messages::-webkit-scrollbar-thumb {
+            background: var(--border-subtle);
+            border-radius: 3px;
+        }
+        
+        .messages::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+        
+        /* Empty state */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            padding: var(--space-2xl);
+            animation: fadeIn 0.6s ease-out;
+        }
+        
+        .empty-icon {
+            width: 80px;
+            height: 80px;
+            border: 2px solid var(--border-accent);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: var(--space-lg);
+            opacity: 0.6;
+        }
+        
+        .empty-icon svg {
+            width: 36px;
+            height: 36px;
+            stroke: var(--accent-primary);
+        }
+        
+        .empty-title {
+            font-family: var(--font-display);
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: var(--space-sm);
+            color: var(--text-primary);
+        }
+        
+        .empty-subtitle {
+            color: var(--text-secondary);
+            max-width: 400px;
+            line-height: 1.7;
+        }
+        
+        .suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-sm);
+            margin-top: var(--space-xl);
+            justify-content: center;
+        }
+        
+        .suggestion {
+            padding: var(--space-sm) var(--space-md);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 13px;
+        }
+        
+        .suggestion:hover {
+            background: var(--bg-hover);
+            border-color: var(--border-accent);
+            color: var(--accent-primary);
+            transform: translateY(-1px);
+        }
+        
+        /* Message Bubbles */
+        .message {
+            margin-bottom: var(--space-lg);
+            animation: messageIn 0.4s ease-out;
+        }
+        
+        @keyframes messageIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            margin-bottom: var(--space-xs);
+        }
+        
+        .message-role {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+        }
+        
+        .message-time {
+            font-size: 11px;
+            color: var(--text-muted);
+            opacity: 0.6;
+        }
+        
+        .message-content {
+            padding: var(--space-md) var(--space-lg);
+            border-radius: var(--radius-lg);
+            line-height: 1.7;
+        }
+        
+        .message.user .message-content {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            margin-left: var(--space-2xl);
+        }
+        
+        .message.assistant .message-content {
+            background: linear-gradient(135deg, var(--accent-glow) 0%, transparent 60%);
+            border: 1px solid var(--border-accent);
+            position: relative;
+        }
+        
+        .message.assistant .message-content::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--accent-primary);
+            border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+        }
+        
+        /* User image in message */
+        .message-image {
+            max-width: 300px;
+            max-height: 200px;
+            border-radius: var(--radius-md);
+            margin-top: var(--space-sm);
+            border: 1px solid var(--border-subtle);
+        }
+        
+        /* Confidence indicator */
+        .confidence {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-xs);
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: var(--space-sm);
+        }
+        
+        .confidence-bar {
+            width: 40px;
+            height: 4px;
+            background: var(--bg-hover);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .confidence-fill {
+            height: 100%;
+            background: var(--sage);
+            transition: width 0.3s ease;
+        }
+        
+        .confidence-fill.high {
+            background: var(--sage);
+        }
+        
+        .confidence-fill.medium {
+            background: var(--accent-primary);
+        }
+        
+        .confidence-fill.low {
+            background: #B85C5C;
+        }
+        
+        /* Escalation message */
+        .escalated {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-sm);
+            padding: var(--space-sm) var(--space-md);
+            background: rgba(107, 139, 107, 0.15);
+            border: 1px solid var(--sage-muted);
+            border-radius: var(--radius-md);
+            margin-top: var(--space-md);
+            font-size: 13px;
+            color: var(--sage);
+        }
+        
+        /* Typing indicator */
+        .typing {
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            padding: var(--space-md);
+            color: var(--text-muted);
+        }
+        
+        .typing-dots {
+            display: flex;
+            gap: 4px;
+        }
+        
+        .typing-dots span {
+            width: 6px;
+            height: 6px;
+            background: var(--accent-primary);
+            border-radius: 50%;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+        
+        @keyframes typing {
+            0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+            30% { opacity: 1; transform: translateY(-3px); }
+        }
+        
+        /* Input Area */
+        .input-area {
+            padding: var(--space-lg) var(--space-xl);
+            border-top: 1px solid var(--border-subtle);
+            background: var(--bg-primary);
+        }
+        
+        .input-container {
+            display: flex;
+            gap: var(--space-sm);
+            align-items: flex-end;
+        }
+        
+        .input-wrapper {
+            flex: 1;
+            position: relative;
+        }
+        
+        .message-input {
+            width: 100%;
+            padding: var(--space-md) var(--space-lg);
+            padding-right: 100px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 14px;
+            line-height: 1.5;
+            resize: none;
+            min-height: 52px;
+            max-height: 200px;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .message-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        
+        .message-input::placeholder {
+            color: var(--text-muted);
+        }
+        
+        .input-actions {
+            position: absolute;
+            right: var(--space-sm);
+            bottom: var(--space-sm);
+            display: flex;
+            gap: var(--space-xs);
+        }
+        
+        .input-btn {
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            border-radius: var(--radius-md);
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .input-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+        
+        .input-btn.send {
+            background: var(--accent-primary);
+            color: var(--bg-deep);
+        }
+        
+        .input-btn.send:hover {
+            background: var(--text-primary);
+        }
+        
+        .input-btn.send:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .input-btn svg {
+            width: 18px;
+            height: 18px;
+        }
+        
+        /* Image preview */
+        .image-preview {
+            display: flex;
+            align-items: center;
+            gap: var(--space-sm);
+            padding: var(--space-sm);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            margin-bottom: var(--space-sm);
+        }
+        
+        .image-preview img {
+            width: 48px;
+            height: 48px;
+            object-fit: cover;
+            border-radius: var(--radius-sm);
+        }
+        
+        .image-preview-info {
+            flex: 1;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .image-preview-remove {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            border-radius: 50%;
+            color: var(--text-muted);
+            cursor: pointer;
+        }
+        
+        .image-preview-remove:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+        
+        /* Sources Panel */
+        .sources-panel {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 60px);
+            background: var(--bg-deep);
+            border-left: 1px solid var(--border-subtle);
+        }
+        
+        .sources-header {
+            padding: var(--space-lg);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        
+        .sources-title {
+            font-family: var(--font-display);
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: var(--space-xs);
+        }
+        
+        .sources-subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        
+        .sources-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: var(--space-md);
+        }
+        
+        .source-card {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            margin-bottom: var(--space-md);
+            transition: all 0.2s ease;
+            animation: cardIn 0.3s ease-out backwards;
+        }
+        
+        .source-card:hover {
+            border-color: var(--border-accent);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+        
+        @keyframes cardIn {
+            from {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .source-image {
+            width: 100%;
+            height: 140px;
+            object-fit: cover;
+            background: var(--bg-elevated);
+        }
+        
+        .source-content {
+            padding: var(--space-md);
+        }
+        
+        .source-type {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-xs);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--accent-primary);
+            margin-bottom: var(--space-xs);
+        }
+        
+        .source-title {
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: var(--space-xs);
+            line-height: 1.4;
+        }
+        
+        .source-caption {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        
+        .source-score {
+            display: flex;
+            align-items: center;
+            gap: var(--space-xs);
+            margin-top: var(--space-sm);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        
+        .sources-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            padding: var(--space-xl);
+            color: var(--text-muted);
+        }
+        
+        .sources-empty svg {
+            width: 48px;
+            height: 48px;
+            stroke: var(--text-muted);
+            opacity: 0.5;
+            margin-bottom: var(--space-md);
+        }
+        
+        /* Mobile toggle */
+        .mobile-sources-toggle {
+            display: none;
+            position: fixed;
+            bottom: 100px;
+            right: var(--space-lg);
+            width: 48px;
+            height: 48px;
+            background: var(--accent-primary);
+            border: none;
+            border-radius: 50%;
+            color: var(--bg-deep);
+            cursor: pointer;
+            box-shadow: 0 4px 16px rgba(212, 165, 116, 0.3);
+            z-index: 50;
+        }
+        
+        @media (max-width: 1024px) {
+            .mobile-sources-toggle {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+        }
+        
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        /* Hidden file input */
+        .file-input {
+            display: none;
+        }
+        
+        /* Loading state */
+        .loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-mark">K</div>
+                <span class="logo-text">Knowledge Console</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <a href="/ingest" style="color: var(--text-secondary); text-decoration: none; padding: 0.5rem 1rem; border-radius: 8px; transition: all 0.2s; font-size: 13px;" onmouseover="this.style.background='var(--bg-elevated)'; this.style.color='var(--accent-primary)'" onmouseout="this.style.background='transparent'; this.style.color='var(--text-secondary)'">+ Add Documents</a>
+                <div class="header-meta">
+                    <span id="connectionStatus">● Connected</span>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Main Chat -->
+        <main class="chat-container">
+            <div class="messages" id="messages">
+                <div class="empty-state" id="emptyState">
+                    <div class="empty-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+                        </svg>
+                    </div>
+                    <h2 class="empty-title">Query your knowledge base</h2>
+                    <p class="empty-subtitle">
+                        Ask questions about documents and images in your collection. 
+                        Upload an image to search visually.
+                    </p>
+                    <div class="suggestions">
+                        <button class="suggestion" data-query="What documents do we have about quarterly reports?">Quarterly reports</button>
+                        <button class="suggestion" data-query="Show me charts related to revenue">Revenue charts</button>
+                        <button class="suggestion" data-query="Find information about the product roadmap">Product roadmap</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div id="imagePreview" class="image-preview" style="display: none;">
+                    <img id="previewImage" src="" alt="Preview">
+                    <div class="image-preview-info">
+                        <div id="previewName">image.jpg</div>
+                    </div>
+                    <button class="image-preview-remove" onclick="clearImagePreview()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                
+                <div class="input-container">
+                    <div class="input-wrapper">
+                        <textarea 
+                            class="message-input" 
+                            id="messageInput" 
+                            placeholder="Ask about your knowledge base..."
+                            rows="1"
+                        ></textarea>
+                        <div class="input-actions">
+                            <button class="input-btn" onclick="document.getElementById('fileInput').click()" title="Upload image">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                            </button>
+                            <button class="input-btn send" id="sendBtn" onclick="sendMessage()" title="Send">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M5 12h14M12 5l7 7-7 7"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <input type="file" id="fileInput" class="file-input" accept="image/*" onchange="handleImageUpload(event)">
+            </div>
+        </main>
+        
+        <!-- Sources Panel -->
+        <aside class="sources-panel" id="sourcesPanel">
+            <div class="sources-header">
+                <h3 class="sources-title">Sources</h3>
+                <p class="sources-subtitle">Retrieved documents and images</p>
+            </div>
+            <div class="sources-list" id="sourcesList">
+                <div class="sources-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+                    </svg>
+                    <p>Sources will appear here when you ask a question</p>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Mobile Sources Toggle -->
+        <button class="mobile-sources-toggle" onclick="toggleSourcesPanel()">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+        </button>
+    </div>
+    
+    <script>
+        // State
+        let conversationId = null;
+        let currentImage = null;
+        let isLoading = false;
+        
+        // API Base URL
+        const API_BASE = window.location.origin;
+        
+        // DOM Elements
+        const messagesContainer = document.getElementById('messages');
+        const emptyState = document.getElementById('emptyState');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const sourcesList = document.getElementById('sourcesList');
+        const imagePreview = document.getElementById('imagePreview');
+        const previewImage = document.getElementById('previewImage');
+        const previewName = document.getElementById('previewName');
+        
+        // Auto-resize textarea
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+        });
+        
+        // Send on Enter (Shift+Enter for newline)
+        messageInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        
+        // Suggestion buttons
+        document.querySelectorAll('.suggestion').forEach(btn => {
+            btn.addEventListener('click', function() {
+                messageInput.value = this.dataset.query;
+                sendMessage();
+            });
+        });
+        
+        // Image upload handling
+        function handleImageUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    currentImage = file;
+                    previewImage.src = e.target.result;
+                    previewName.textContent = file.name;
+                    imagePreview.style.display = 'flex';
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+        
+        function clearImagePreview() {
+            currentImage = null;
+            imagePreview.style.display = 'none';
+            document.getElementById('fileInput').value = '';
+        }
+        
+        // Toggle sources panel (mobile)
+        function toggleSourcesPanel() {
+            const panel = document.getElementById('sourcesPanel');
+            panel.classList.toggle('mobile-visible');
+        }
+        
+        // Add message to UI
+        function addMessage(role, content, imageUrl = null) {
+            emptyState.style.display = 'none';
+            
+            const msg = document.createElement('div');
+            msg.className = `message ${role}`;
+            
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            let imageHtml = '';
+            if (imageUrl) {
+                imageHtml = `<img src="${imageUrl}" alt="Uploaded image" class="message-image">`;
+            }
+            
+            msg.innerHTML = `
+                <div class="message-header">
+                    <span class="message-role">${role === 'user' ? 'You' : 'Console'}</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="message-content">
+                    ${content}
+                    ${imageHtml}
+                </div>
+            `;
+            
+            messagesContainer.appendChild(msg);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            return msg;
+        }
+        
+        // Add assistant message with metadata
+        function addAssistantMessage(data) {
+            emptyState.style.display = 'none';
+            
+            const msg = document.createElement('div');
+            msg.className = 'message assistant';
+            
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            // Confidence level
+            let confClass = 'high';
+            if (data.confidence < 0.5) confClass = 'low';
+            else if (data.confidence < 0.7) confClass = 'medium';
+            
+            let extraContent = '';
+            if (data.escalated) {
+                extraContent = `
+                    <div class="escalated">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        Connecting to human agent...
+                    </div>
+                `;
+            }
+            
+            msg.innerHTML = `
+                <div class="message-header">
+                    <span class="message-role">Console</span>
+                    <span class="message-time">${time}</span>
+                </div>
+                <div class="message-content">
+                    ${data.message}
+                    ${extraContent}
+                    <div class="confidence">
+                        <div class="confidence-bar">
+                            <div class="confidence-fill ${confClass}" style="width: ${data.confidence * 100}%"></div>
+                        </div>
+                        <span>${Math.round(data.confidence * 100)}% confidence</span>
+                    </div>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(msg);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            // Update sources
+            updateSources(data.sources || [], data.source_images || []);
+        }
+        
+        // Show typing indicator
+        function showTyping() {
+            const typing = document.createElement('div');
+            typing.className = 'typing';
+            typing.id = 'typingIndicator';
+            typing.innerHTML = `
+                <div class="typing-dots">
+                    <span></span><span></span><span></span>
+                </div>
+                <span>Searching knowledge base...</span>
+            `;
+            messagesContainer.appendChild(typing);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+        
+        function hideTyping() {
+            const typing = document.getElementById('typingIndicator');
+            if (typing) typing.remove();
+        }
+        
+        // Update sources panel
+        function updateSources(sources, sourceImages) {
+            if (!sources.length && !sourceImages.length) {
+                sourcesList.innerHTML = `
+                    <div class="sources-empty">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+                        </svg>
+                        <p>No sources found</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            sourcesList.innerHTML = '';
+            
+            // Combine sources with images
+            const allSources = sources.map((s, i) => {
+                const img = sourceImages.find(si => si.title === s.title);
+                return { ...s, imageUrl: img?.url };
+            });
+            
+            allSources.forEach((source, index) => {
+                const card = document.createElement('div');
+                card.className = 'source-card';
+                card.style.animationDelay = `${index * 0.1}s`;
+                
+                const imageHtml = source.imageUrl 
+                    ? `<img src="${source.imageUrl}" alt="${source.title}" class="source-image">`
+                    : '';
+                
+                const typeIcon = source.type === 'image' 
+                    ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>'
+                    : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>';
+                
+                card.innerHTML = `
+                    ${imageHtml}
+                    <div class="source-content">
+                        <div class="source-type">${typeIcon} ${source.type}</div>
+                        <div class="source-title">${source.title}</div>
+                        <div class="source-score">
+                            Relevance: ${Math.round((source.relevance_score || 0) * 100)}%
+                        </div>
+                    </div>
+                `;
+                
+                if (source.url) {
+                    card.style.cursor = 'pointer';
+                    card.onclick = () => window.open(source.url, '_blank');
+                }
+                
+                sourcesList.appendChild(card);
+            });
+        }
+        
+        // Send message
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message && !currentImage) return;
+            if (isLoading) return;
+            
+            isLoading = true;
+            sendBtn.disabled = true;
+            
+            // Show user message
+            let imageDataUrl = null;
+            if (currentImage) {
+                imageDataUrl = previewImage.src;
+            }
+            addMessage('user', message, imageDataUrl);
+            
+            // Clear input
+            messageInput.value = '';
+            messageInput.style.height = 'auto';
+            
+            // Show typing
+            showTyping();
+            
+            try {
+                let response;
+                
+                if (currentImage) {
+                    // Multimodal request
+                    const formData = new FormData();
+                    formData.append('message', message);
+                    formData.append('image', currentImage);
+                    if (conversationId) {
+                        formData.append('conversation_id', conversationId);
+                    }
+                    
+                    response = await fetch(`${API_BASE}/chat/multimodal`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                } else {
+                    // Text-only request
+                    response = await fetch(`${API_BASE}/chat`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            message: message,
+                            conversation_id: conversationId
+                        })
+                    });
+                }
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                conversationId = data.conversation_id;
+                
+                hideTyping();
+                addAssistantMessage(data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                hideTyping();
+                addMessage('assistant', `Sorry, I encountered an error: ${error.message}. Please try again.`);
+            } finally {
+                isLoading = false;
+                sendBtn.disabled = false;
+                clearImagePreview();
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            messageInput.focus();
+        });
+    </script>
+</body>
+</html>

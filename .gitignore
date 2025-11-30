@@ -1,0 +1,7 @@
+__pycache__
+.env
+
+# Dev artifacts
+dev.ipynb
+/dev
+CLAUDE.md

@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+
+  # Chatbot API
+  chatbot:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - image_storage:/app/images
+    environment:
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - QDRANT_URL=http://qdrant:6333
+      - STORAGE_PROVIDER=local
+      - PUBLIC_URL_BASE=http://localhost:8000/images
+      # Optional handoff config
+      - HELPDESK_WEBHOOK_URL=${HELPDESK_WEBHOOK_URL:-}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_SUPPORT_CHANNEL=${SLACK_SUPPORT_CHANNEL:-}
+    depends_on:
+      - qdrant
+    command: python server.py
+
+volumes:
+  qdrant_data:
+  image_storage:
