@@ -108,7 +108,7 @@ class MultimodalChatbot:
                 stored = await storage.upload(image_data, "user_upload.jpg")
                 user_image_url = stored.url
             except Exception as e:
-                print(f"âš ï¸ Failed to upload user image: {e}")
+                print(f"Ã¢Å¡Â Ã¯Â¸Â Failed to upload user image: {e}")
                 # Continue without the image rather than crashing
         
         # Rewrite query if we have conversation history
@@ -120,7 +120,7 @@ class MultimodalChatbot:
                     current_query=message
                 )
             except Exception as e:
-                print(f"âš ï¸ Query rewrite failed: {e}")
+                print(f"Ã¢Å¡Â Ã¯Â¸Â Query rewrite failed: {e}")
         
         # Step 1: Retrieve relevant documents (Using V2 Pipeline)
         # Note: We pass raw bytes to retrieval for perceptual hashing
@@ -131,7 +131,7 @@ class MultimodalChatbot:
                 top_k=config.qdrant.top_k
             )
         except Exception as e:
-            print(f"âŒ Retrieval failed: {e}")
+            print(f"Ã¢ÂÅ’ Retrieval failed: {e}")
             traceback.print_exc()
             # Fallback to empty result to allow graceful failure or escalation
             retrieval_result = RetrievalResultV2(documents=[], confidence=0.0, query_intent=None)
@@ -183,7 +183,7 @@ class MultimodalChatbot:
                 user_image_url=user_image_url
             )
         except Exception as e:
-            print(f"âŒ Generation failed: {e}")
+            print(f"Ã¢ÂÅ’ Generation failed: {e}")
             return ChatResponse(
                 message="I'm having trouble generating a response right now. Please try again.",
                 confidence=0.0,
@@ -248,7 +248,7 @@ class MultimodalChatbot:
                 full_response.append(token)
                 yield token
         except Exception as e:
-            print(f"âŒ Stream error: {e}")
+            print(f"Ã¢ÂÅ’ Stream error: {e}")
             yield "\n[Error generating response]"
         
         # After streaming, add sources
@@ -350,18 +350,25 @@ class MultimodalChatbot:
                 relevance_score=doc.score
             ))
             
-            # Collect image sources for display
+            # Collect image sources for display with visual grounding data
             if doc.type == "image" and doc.url and config.ux.show_source_images:
+                # Extract components for visual grounding (bounding boxes)
+                components = []
+                if doc.metadata:
+                    components = doc.metadata.get("components", [])
+                
                 source_images.append({
                     "url": doc.url,
                     "title": doc.source_display,
-                    "caption": doc.caption[:100] if doc.caption else ""
+                    "caption": doc.caption[:200] if doc.caption else "",
+                    "components": components,  # Visual grounding data
+                    "match_type": doc.match_type,
+                    "score": doc.score
                 })
         
-        # Add source citations to message if sources exist
+        # Don't append sources to message - they're shown in the sidebar
+        # This avoids the duplicate/broken markdown link issue
         message = content
-        if sources and config.ux.show_source_images:
-            message += self._format_sources(retrieval_result.documents[:3])
         
         return ChatResponse(
             message=message,

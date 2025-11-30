@@ -328,17 +328,20 @@
         .confidence {
             display: inline-flex;
             align-items: center;
-            gap: var(--space-xs);
+            gap: var(--space-sm);
             font-size: 11px;
             color: var(--text-muted);
-            margin-top: var(--space-sm);
+            margin-top: var(--space-md);
+            padding: var(--space-xs) var(--space-sm);
+            background: var(--bg-elevated);
+            border-radius: var(--radius-md);
         }
         
         .confidence-bar {
-            width: 40px;
-            height: 4px;
+            width: 60px;
+            height: 6px;
             background: var(--bg-hover);
-            border-radius: 2px;
+            border-radius: 3px;
             overflow: hidden;
         }
         
@@ -452,9 +455,11 @@
         .input-actions {
             position: absolute;
             right: var(--space-sm);
-            bottom: var(--space-sm);
+            bottom: 50%;
+            transform: translateY(50%);
             display: flex;
             gap: var(--space-xs);
+            align-items: center;
         }
         
         .input-btn {
@@ -469,6 +474,7 @@
             color: var(--text-muted);
             cursor: pointer;
             transition: all 0.2s ease;
+            flex-shrink: 0;
         }
         
         .input-btn:hover {
@@ -598,11 +604,48 @@
             }
         }
         
+        .source-image-container {
+            position: relative;
+            width: 100%;
+            height: 160px;
+            overflow: hidden;
+            background: var(--bg-elevated);
+        }
+        
         .source-image {
             width: 100%;
-            height: 140px;
-            object-fit: cover;
+            height: 100%;
+            object-fit: contain;
             background: var(--bg-elevated);
+        }
+        
+        /* Visual grounding overlay */
+        .source-grounding {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: var(--space-xs) var(--space-sm);
+            background: linear-gradient(transparent, rgba(0,0,0,0.8));
+            display: flex;
+            gap: var(--space-xs);
+            flex-wrap: wrap;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        
+        .source-card:hover .source-grounding {
+            opacity: 1;
+        }
+        
+        .grounding-tag {
+            font-size: 9px;
+            padding: 2px 6px;
+            background: var(--accent-primary);
+            color: var(--bg-deep);
+            border-radius: var(--radius-sm);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
         }
         
         .source-content {
@@ -618,6 +661,15 @@
             letter-spacing: 0.1em;
             color: var(--accent-primary);
             margin-bottom: var(--space-xs);
+        }
+        
+        .source-match-type {
+            font-size: 9px;
+            padding: 2px 6px;
+            background: var(--bg-hover);
+            border-radius: var(--radius-sm);
+            color: var(--text-muted);
+            margin-left: auto;
         }
         
         .source-title {
@@ -637,15 +689,86 @@
             -webkit-line-clamp: 3;
             -webkit-box-orient: vertical;
             overflow: hidden;
+            margin-bottom: var(--space-sm);
         }
         
         .source-score {
             display: flex;
             align-items: center;
             gap: var(--space-xs);
-            margin-top: var(--space-sm);
             font-size: 11px;
             color: var(--text-muted);
+        }
+        
+        .source-score-bar {
+            flex: 1;
+            height: 4px;
+            background: var(--bg-hover);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .source-score-fill {
+            height: 100%;
+            background: var(--sage);
+            transition: width 0.3s;
+        }
+        
+        /* Markdown-rendered content styles */
+        .message-content strong {
+            color: var(--accent-primary);
+            font-weight: 500;
+        }
+        
+        .message-content em {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+        
+        .message-content a {
+            color: var(--accent-primary);
+            text-decoration: none;
+            border-bottom: 1px solid var(--border-accent);
+            transition: border-color 0.2s;
+        }
+        
+        .message-content a:hover {
+            border-color: var(--accent-primary);
+        }
+        
+        .message-content p {
+            margin-bottom: var(--space-sm);
+        }
+        
+        .message-content p:last-child {
+            margin-bottom: 0;
+        }
+        
+        .message-content ul, .message-content ol {
+            margin: var(--space-sm) 0;
+            padding-left: var(--space-lg);
+        }
+        
+        .message-content li {
+            margin-bottom: var(--space-xs);
+        }
+        
+        .message-content code {
+            background: var(--bg-elevated);
+            padding: 2px 6px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+        }
+        
+        /* Escalation hint styling */
+        .escalation-hint {
+            margin-top: var(--space-md);
+            padding: var(--space-sm) var(--space-md);
+            background: var(--bg-elevated);
+            border-left: 2px solid var(--text-muted);
+            font-size: 12px;
+            color: var(--text-muted);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
         }
         
         .sources-empty {
@@ -721,7 +844,7 @@
             <div style="display: flex; align-items: center; gap: 1rem;">
                 <a href="/ingest" style="color: var(--text-secondary); text-decoration: none; padding: 0.5rem 1rem; border-radius: 8px; transition: all 0.2s; font-size: 13px;" onmouseover="this.style.background='var(--bg-elevated)'; this.style.color='var(--accent-primary)'" onmouseout="this.style.background='transparent'; this.style.color='var(--text-secondary)'">+ Add Documents</a>
                 <div class="header-meta">
-                    <span id="connectionStatus">● Connected</span>
+                    <span id="connectionStatus">â— Connected</span>
                 </div>
             </div>
         </header>
@@ -879,6 +1002,56 @@
             panel.classList.toggle('mobile-visible');
         }
         
+        // Simple markdown parser for basic formatting
+        function parseMarkdown(text) {
+            if (!text) return '';
+            
+            // Escape HTML first to prevent XSS
+            let html = text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            
+            // Parse markdown elements
+            // Bold: **text** or __text__
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+            
+            // Italic: *text* or _text_
+            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+            
+            // Links: [text](url)
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+            
+            // Inline code: `code`
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            
+            // Convert numbered lists (1. item)
+            html = html.replace(/^(\d+)\.\s+(.+)$/gm, '<li>$2</li>');
+            // Wrap consecutive li elements in ol
+            html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ol>$&</ol>');
+            
+            // Convert bullet lists (- item or * item)
+            html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+            
+            // Paragraphs: double newlines
+            html = html.replace(/\n\n+/g, '</p><p>');
+            
+            // Single newlines within paragraphs
+            html = html.replace(/\n/g, '<br>');
+            
+            // Wrap in paragraph tags
+            html = '<p>' + html + '</p>';
+            
+            // Clean up empty paragraphs
+            html = html.replace(/<p>\s*<\/p>/g, '');
+            html = html.replace(/<p><br>/g, '<p>');
+            html = html.replace(/<br><\/p>/g, '</p>');
+            
+            return html;
+        }
+        
         // Add message to UI
         function addMessage(role, content, imageUrl = null) {
             emptyState.style.display = 'none';
@@ -899,7 +1072,7 @@
                     <span class="message-time">${time}</span>
                 </div>
                 <div class="message-content">
-                    ${content}
+                    ${parseMarkdown(content)}
                     ${imageHtml}
                 </div>
             `;
@@ -921,8 +1094,14 @@
             
             // Confidence level
             let confClass = 'high';
-            if (data.confidence < 0.5) confClass = 'low';
-            else if (data.confidence < 0.7) confClass = 'medium';
+            let confLabel = 'High confidence';
+            if (data.confidence < 0.5) {
+                confClass = 'low';
+                confLabel = 'Low confidence';
+            } else if (data.confidence < 0.7) {
+                confClass = 'medium';
+                confLabel = 'Medium confidence';
+            }
             
             let extraContent = '';
             if (data.escalated) {
@@ -936,19 +1115,31 @@
                 `;
             }
             
+            // Check for escalation hint in message and separate it
+            let mainMessage = data.message;
+            let escalationHint = '';
+            if (mainMessage.includes("If this doesn't fully answer your question")) {
+                const parts = mainMessage.split(/\n\n_If this doesn't/);
+                mainMessage = parts[0];
+                if (parts[1]) {
+                    escalationHint = `<div class="escalation-hint">💬 If this doesn't ${parts[1].replace(/_$/, '')}</div>`;
+                }
+            }
+            
             msg.innerHTML = `
                 <div class="message-header">
                     <span class="message-role">Console</span>
                     <span class="message-time">${time}</span>
                 </div>
                 <div class="message-content">
-                    ${data.message}
+                    ${parseMarkdown(mainMessage)}
+                    ${escalationHint}
                     ${extraContent}
-                    <div class="confidence">
+                    <div class="confidence" title="${confLabel}">
                         <div class="confidence-bar">
                             <div class="confidence-fill ${confClass}" style="width: ${data.confidence * 100}%"></div>
                         </div>
-                        <span>${Math.round(data.confidence * 100)}% confidence</span>
+                        <span>${Math.round(data.confidence * 100)}%</span>
                     </div>
                 </div>
             `;
@@ -956,7 +1147,7 @@
             messagesContainer.appendChild(msg);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             
-            // Update sources
+            // Update sources with the new source_images format
             updateSources(data.sources || [], data.source_images || []);
         }
         
@@ -980,7 +1171,7 @@
             if (typing) typing.remove();
         }
         
-        // Update sources panel
+        // Update sources panel with visual grounding support
         function updateSources(sources, sourceImages) {
             if (!sources.length && !sourceImages.length) {
                 sourcesList.innerHTML = `
@@ -988,7 +1179,7 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                             <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
                         </svg>
-                        <p>No sources found</p>
+                        <p>Sources will appear here when you ask a question</p>
                     </div>
                 `;
                 return;
@@ -996,32 +1187,79 @@
             
             sourcesList.innerHTML = '';
             
-            // Combine sources with images
-            const allSources = sources.map((s, i) => {
-                const img = sourceImages.find(si => si.title === s.title);
-                return { ...s, imageUrl: img?.url };
-            });
+            // Use sourceImages directly as they now contain all the data we need
+            const displaySources = sourceImages.length > 0 ? sourceImages : sources.map(s => ({
+                url: s.url,
+                title: s.title,
+                caption: '',
+                components: [],
+                match_type: 'semantic',
+                score: s.relevance_score,
+                type: s.type
+            }));
             
-            allSources.forEach((source, index) => {
+            displaySources.forEach((source, index) => {
                 const card = document.createElement('div');
                 card.className = 'source-card';
                 card.style.animationDelay = `${index * 0.1}s`;
                 
-                const imageHtml = source.imageUrl 
-                    ? `<img src="${source.imageUrl}" alt="${source.title}" class="source-image">`
-                    : '';
+                // Build image HTML with visual grounding overlay
+                let imageHtml = '';
+                if (source.url) {
+                    // Build grounding tags from components
+                    let groundingHtml = '';
+                    if (source.components && source.components.length > 0) {
+                        const tags = source.components.slice(0, 4).map(c => 
+                            `<span class="grounding-tag">${c.name || c.type || 'Component'}</span>`
+                        ).join('');
+                        groundingHtml = `<div class="source-grounding">${tags}</div>`;
+                    }
+                    
+                    imageHtml = `
+                        <div class="source-image-container">
+                            <img src="${source.url}" alt="${source.title}" class="source-image">
+                            ${groundingHtml}
+                        </div>
+                    `;
+                }
                 
-                const typeIcon = source.type === 'image' 
+                // Type icon
+                const typeIcon = source.type === 'image' || source.url
                     ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>'
                     : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>';
+                
+                // Match type badge
+                const matchType = source.match_type || 'semantic';
+                const matchLabel = {
+                    'exact': 'Exact',
+                    'visual': 'Visual',
+                    'textual': 'Text',
+                    'semantic': 'Semantic'
+                }[matchType] || 'Match';
+                
+                // Caption (truncated)
+                const captionHtml = source.caption 
+                    ? `<div class="source-caption">${source.caption}</div>`
+                    : '';
+                
+                // Score as percentage with visual bar
+                const scorePercent = Math.round((source.score || 0) * 100);
                 
                 card.innerHTML = `
                     ${imageHtml}
                     <div class="source-content">
-                        <div class="source-type">${typeIcon} ${source.type}</div>
+                        <div class="source-type">
+                            ${typeIcon}
+                            <span>IMAGE</span>
+                            <span class="source-match-type">${matchLabel}</span>
+                        </div>
                         <div class="source-title">${source.title}</div>
+                        ${captionHtml}
                         <div class="source-score">
-                            Relevance: ${Math.round((source.relevance_score || 0) * 100)}%
+                            <div class="source-score-bar">
+                                <div class="source-score-fill" style="width: ${scorePercent}%"></div>
+                            </div>
+                            <span>${scorePercent}%</span>
                         </div>
                     </div>
                 `;
