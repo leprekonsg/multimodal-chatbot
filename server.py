@@ -30,7 +30,8 @@ from retrieval import enhanced_retriever
 from usage import tracker
 from handoff import handoff_manager
 
-# ===== Pydantic Models =====
+# ... [Keep Pydantic Models as they are] ...
+# (ChatRequest, ChatResponseModel, IngestRequest, IngestResponse, SearchRequest, HealthResponse, UsageResponse)
 
 class ChatRequest(BaseModel):
     """Chat request body."""
@@ -88,7 +89,7 @@ class UsageResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup
-    print("ðŸš€ Starting Multimodal RAG Chatbot (V2 Integration)...")
+    print("🚀 Starting Multimodal RAG Chatbot (V2 Integration)...")
     print(f"   Voyage API: {'configured' if config.voyage.api_key else 'NOT SET'}")
     print(f"   Qwen API: {'configured' if config.qwen.api_key else 'NOT SET'}")
     print(f"   Qdrant: {config.qdrant.url}")
@@ -99,14 +100,14 @@ async def lifespan(app: FastAPI):
     # Initialize V2 Collection
     try:
         await ingestion_pipeline.vector_store.ensure_collection()
-        print("âœ… Multi-vector collection ready.")
+        print("✅ Multi-vector collection ready.")
     except Exception as e:
-        print(f"âŒ Qdrant Connection Failed: {e}")
+        print(f"❌ Qdrant Connection Failed: {e}")
     
     yield
     
     # Shutdown
-    print("ðŸ‘‹ Shutting down...")
+    print("👋 Shutting down...")
     await ingestion_pipeline.close()
     await enhanced_retriever.close()
 
@@ -136,14 +137,21 @@ if os.path.exists(config.storage.local_path):
         name="images"
     )
 
-# Serve static frontend
+# Serve static frontend assets
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
-    app.mount(
-        "/static",
-        StaticFiles(directory=str(static_dir)),
-        name="static"
-    )
+    # Mount the whole static directory at /static
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    
+    # Explicitly mount css and js directories to root-relative paths
+    # This fixes the 404s for <link href="css/..." > in index.html served at /
+    css_dir = static_dir / "css"
+    if css_dir.exists():
+        app.mount("/css", StaticFiles(directory=str(css_dir)), name="css")
+        
+    js_dir = static_dir / "js"
+    if js_dir.exists():
+        app.mount("/js", StaticFiles(directory=str(js_dir)), name="js")
 
 
 # ===== Frontend Routes =====
@@ -163,7 +171,8 @@ async def serve_ingest_page():
     return HTMLResponse(content="Ingestion page not found", status_code=404)
 
 
-# ===== API Endpoints =====
+# ... [Rest of the API Endpoints remain unchanged] ...
+# (health_check, get_usage, chat, chat_multimodal, chat_stream, ingest_text, ingest_image, ingest_file, search, clear_conversation, visual_grounding)
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -227,7 +236,7 @@ async def chat(request: ChatRequest):
             latency_ms=response.latency_ms
         )
     except Exception as e:
-        print("âŒ Error in /chat:")
+        print("❌ Error in /chat:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -275,7 +284,7 @@ async def chat_multimodal(
             latency_ms=response.latency_ms
         )
     except Exception as e:
-        print("âŒ Error in /chat/multimodal:")
+        print("❌ Error in /chat/multimodal:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -308,7 +317,7 @@ async def ingest_text(request: IngestRequest):
             caption=doc.caption
         )
     except Exception as e:
-        print("âŒ Error in /ingest/text:")
+        print("❌ Error in /ingest/text:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -335,7 +344,7 @@ async def ingest_image(
             caption=doc.caption
         )
     except Exception as e:
-        print("âŒ Error in /ingest/image:")
+        print("❌ Error in /ingest/image:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -365,7 +374,7 @@ async def ingest_file(file: UploadFile = File(...)):
                 yield json.dumps(update) + "\n"
                 
         except Exception as e:
-            print("âŒ Error in /ingest/file stream:")
+            print("❌ Error in /ingest/file stream:")
             traceback.print_exc()
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
         finally:
@@ -405,7 +414,7 @@ async def search(request: SearchRequest):
             "query_intent": result.query_intent.value
         }
     except Exception as e:
-        print("âŒ Error in /search:")
+        print("❌ Error in /search:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -417,8 +426,6 @@ async def clear_conversation(conversation_id: str):
 
 
 # === Visual Grounding API ===
-# Enables technicians to locate specific components on manual pages
-
 class VisualGroundingRequest(BaseModel):
     """Request for visual grounding (locate element in image)."""
     query: str = Field(..., description="What to locate (e.g., 'reset button', 'valve A')")
@@ -429,28 +436,12 @@ class VisualGroundingRequest(BaseModel):
 
 @app.post("/visual-grounding")
 async def visual_grounding(request: VisualGroundingRequest):
-    """
-    Locate specific elements in technical manual pages.
-    
-    This endpoint enables technicians to ask "where is the reset button?"
-    and get precise bounding box coordinates on the relevant page.
-    
-    Returns:
-        - found: Whether the element was located
-        - element: Name of the found element
-        - bbox: Bounding box coordinates [[x1,y1,x2,y2]] in [0-1000] normalized range
-        - image_url: URL of the image containing the element
-        - description: Additional context about the location
-    """
     from llm_client import qwen_client
     
     try:
-        # If specific image URL provided, ground directly on that image
         if request.image_url:
-            # Get components from metadata if available
             existing_components = None
             if request.use_indexed_components:
-                # Try to find the document in the database to get pre-indexed components
                 result = await enhanced_retriever.retrieve(
                     query_text=request.query,
                     top_k=1,
@@ -470,7 +461,6 @@ async def visual_grounding(request: VisualGroundingRequest):
             grounding_result["image_url"] = request.image_url
             return grounding_result
         
-        # Otherwise, first retrieve relevant page, then ground
         result = await enhanced_retriever.retrieve(
             query_text=request.query,
             top_k=3,
@@ -484,12 +474,10 @@ async def visual_grounding(request: VisualGroundingRequest):
                 "suggestions": ["Try different keywords", "Upload the relevant manual page"]
             }
         
-        # Try grounding on each retrieved page until we find it
         for doc in result.documents:
             if not doc.url:
                 continue
             
-            # Get pre-indexed components if available
             existing_components = None
             if request.use_indexed_components and doc.metadata:
                 existing_components = doc.metadata.get("components", [])
@@ -509,7 +497,6 @@ async def visual_grounding(request: VisualGroundingRequest):
                 }
                 return grounding_result
         
-        # If not found in any retrieved page
         return {
             "found": False,
             "searched_pages": [doc.source_display for doc in result.documents[:3]],

@@ -1,0 +1,95 @@
+:root {
+    /* Warm dark palette - avoiding cold blues */
+    --bg-deep: #0A0A0C;
+    --bg-primary: #111114;
+    --bg-elevated: #1A1A1E;
+    --bg-hover: #222228;
+    
+    /* Warm amber accent - distinctive, not generic */
+    --accent-primary: #D4A574;
+    --accent-glow: rgba(212, 165, 116, 0.15);
+    --accent-muted: #8B7355;
+    
+    /* Sage secondary - organic feel */
+    --sage: #6B8B6B;
+    --sage-muted: #4A634A;
+    --coral: #C17B7B;
+    
+    /* Warm text tones */
+    --text-primary: #F5F0E6;
+    --text-secondary: #A39B8B;
+    --text-muted: #6B6560;
+    
+    /* Borders */
+    --border-subtle: rgba(245, 240, 230, 0.08);
+    --border-accent: rgba(212, 165, 116, 0.3);
+    
+    /* Typography */
+    --font-display: 'Crimson Pro', Georgia, serif;
+    --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+    
+    /* Spacing */
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+    --space-xl: 2rem;
+    --space-2xl: 3rem;
+    
+    /* Radii */
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    background: var(--bg-deep);
+}
+
+/* Shared Header Styles */
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-md) var(--space-xl);
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-primary);
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.logo-mark {
+    width: 32px;
+    height: 32px;
+    border: 2px solid var(--accent-primary);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 16px;
+    color: var(--accent-primary);
+}
+
+.logo-text {
+    font-family: var(--font-display);
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}

@@ -535,6 +535,17 @@ class HybridRetrieverV2:
             print(f"[Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
             caption_preview = (top_doc.caption or 'None')[:150]
             print(f"[Retrieval] Caption: {caption_preview}...")
+            
+            # NEW: Print components for top result to debug visual grounding
+            if top_doc.metadata and top_doc.metadata.get("components"):
+                comps = top_doc.metadata["components"]
+                print(f"[Retrieval] Indexed Components ({len(comps)}):")
+                for c in comps[:5]:  # Show first 5
+                    print(f"   - {c.get('label', 'Unknown')}: {c.get('bbox_2d', 'No bbox')}")
+                if len(comps) > 5:
+                    print(f"   ... and {len(comps)-5} more")
+            else:
+                print("[Retrieval] No components indexed for this document")
         else:
             print(f"[!] No documents found!")
         print(f"[Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
