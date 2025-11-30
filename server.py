@@ -88,7 +88,7 @@ class UsageResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup
-    print("🚀 Starting Multimodal RAG Chatbot (V2 Integration)...")
+    print("ðŸš€ Starting Multimodal RAG Chatbot (V2 Integration)...")
     print(f"   Voyage API: {'configured' if config.voyage.api_key else 'NOT SET'}")
     print(f"   Qwen API: {'configured' if config.qwen.api_key else 'NOT SET'}")
     print(f"   Qdrant: {config.qdrant.url}")
@@ -99,14 +99,14 @@ async def lifespan(app: FastAPI):
     # Initialize V2 Collection
     try:
         await ingestion_pipeline.vector_store.ensure_collection()
-        print("✅ Multi-vector collection ready.")
+        print("âœ… Multi-vector collection ready.")
     except Exception as e:
-        print(f"❌ Qdrant Connection Failed: {e}")
+        print(f"âŒ Qdrant Connection Failed: {e}")
     
     yield
     
     # Shutdown
-    print("👋 Shutting down...")
+    print("ðŸ‘‹ Shutting down...")
     await ingestion_pipeline.close()
     await enhanced_retriever.close()
 
@@ -227,7 +227,7 @@ async def chat(request: ChatRequest):
             latency_ms=response.latency_ms
         )
     except Exception as e:
-        print("❌ Error in /chat:")
+        print("âŒ Error in /chat:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -275,7 +275,7 @@ async def chat_multimodal(
             latency_ms=response.latency_ms
         )
     except Exception as e:
-        print("❌ Error in /chat/multimodal:")
+        print("âŒ Error in /chat/multimodal:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -308,7 +308,7 @@ async def ingest_text(request: IngestRequest):
             caption=doc.caption
         )
     except Exception as e:
-        print("❌ Error in /ingest/text:")
+        print("âŒ Error in /ingest/text:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -335,7 +335,7 @@ async def ingest_image(
             caption=doc.caption
         )
     except Exception as e:
-        print("❌ Error in /ingest/image:")
+        print("âŒ Error in /ingest/image:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -365,7 +365,7 @@ async def ingest_file(file: UploadFile = File(...)):
                 yield json.dumps(update) + "\n"
                 
         except Exception as e:
-            print("❌ Error in /ingest/file stream:")
+            print("âŒ Error in /ingest/file stream:")
             traceback.print_exc()
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
         finally:
@@ -405,7 +405,7 @@ async def search(request: SearchRequest):
             "query_intent": result.query_intent.value
         }
     except Exception as e:
-        print("❌ Error in /search:")
+        print("âŒ Error in /search:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -414,6 +414,116 @@ async def search(request: SearchRequest):
 async def clear_conversation(conversation_id: str):
     chatbot.clear_conversation(conversation_id)
     return {"status": "cleared", "conversation_id": conversation_id}
+
+
+# === Visual Grounding API ===
+# Enables technicians to locate specific components on manual pages
+
+class VisualGroundingRequest(BaseModel):
+    """Request for visual grounding (locate element in image)."""
+    query: str = Field(..., description="What to locate (e.g., 'reset button', 'valve A')")
+    image_url: Optional[str] = Field(None, description="Specific image URL (if known)")
+    document_id: Optional[str] = Field(None, description="Document ID to search in")
+    use_indexed_components: bool = Field(True, description="Check pre-indexed components first")
+
+
+@app.post("/visual-grounding")
+async def visual_grounding(request: VisualGroundingRequest):
+    """
+    Locate specific elements in technical manual pages.
+    
+    This endpoint enables technicians to ask "where is the reset button?"
+    and get precise bounding box coordinates on the relevant page.
+    
+    Returns:
+        - found: Whether the element was located
+        - element: Name of the found element
+        - bbox: Bounding box coordinates [[x1,y1,x2,y2]] in [0-1000] normalized range
+        - image_url: URL of the image containing the element
+        - description: Additional context about the location
+    """
+    from llm_client import qwen_client
+    
+    try:
+        # If specific image URL provided, ground directly on that image
+        if request.image_url:
+            # Get components from metadata if available
+            existing_components = None
+            if request.use_indexed_components:
+                # Try to find the document in the database to get pre-indexed components
+                result = await enhanced_retriever.retrieve(
+                    query_text=request.query,
+                    top_k=1,
+                    filter_type="image"
+                )
+                if result.documents:
+                    doc = result.documents[0]
+                    if doc.metadata and doc.metadata.get("components"):
+                        existing_components = doc.metadata["components"]
+            
+            grounding_result = await qwen_client.visual_grounding(
+                image_url=request.image_url,
+                query=request.query,
+                existing_components=existing_components
+            )
+            
+            grounding_result["image_url"] = request.image_url
+            return grounding_result
+        
+        # Otherwise, first retrieve relevant page, then ground
+        result = await enhanced_retriever.retrieve(
+            query_text=request.query,
+            top_k=3,
+            filter_type="image"
+        )
+        
+        if not result.documents:
+            return {
+                "found": False,
+                "error": "No relevant pages found in the knowledge base",
+                "suggestions": ["Try different keywords", "Upload the relevant manual page"]
+            }
+        
+        # Try grounding on each retrieved page until we find it
+        for doc in result.documents:
+            if not doc.url:
+                continue
+            
+            # Get pre-indexed components if available
+            existing_components = None
+            if request.use_indexed_components and doc.metadata:
+                existing_components = doc.metadata.get("components", [])
+            
+            grounding_result = await qwen_client.visual_grounding(
+                image_url=doc.url,
+                query=request.query,
+                existing_components=existing_components
+            )
+            
+            if grounding_result.get("found"):
+                grounding_result["image_url"] = doc.url
+                grounding_result["source_document"] = {
+                    "id": doc.id,
+                    "title": doc.source_display,
+                    "caption": doc.caption
+                }
+                return grounding_result
+        
+        # If not found in any retrieved page
+        return {
+            "found": False,
+            "searched_pages": [doc.source_display for doc in result.documents[:3]],
+            "suggestions": [
+                f"'{request.query}' was not found in the most relevant pages",
+                "Try more specific terms",
+                "The component may be on a different page"
+            ]
+        }
+        
+    except Exception as e:
+        print("Error in /visual-grounding:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

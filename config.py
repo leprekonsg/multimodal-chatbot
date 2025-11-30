@@ -22,6 +22,22 @@ class VoyageConfig:
     max_image_pixels: int = 16_000_000
 
 @dataclass
+class RerankConfig:
+    """
+    Voyage Rerank 2 configuration.
+    
+    Research Evidence:
+    - 20-48% accuracy improvement (Databricks)
+    - Optimal pipeline: Retrieve 50 → Rerank → Top 5 to LLM
+    """
+    enabled: bool = True
+    model_name: str = "rerank-2"  # Voyage Rerank 2
+    top_k: int = 5  # Final results to LLM
+    candidates_to_rerank: int = 50  # Candidates from hybrid search
+    # Set to False to disable reranking (e.g., for latency-critical use cases)
+    # Reranking adds ~300-600ms but significantly improves precision
+
+@dataclass
 class QwenConfig:
     api_key: str = field(default_factory=lambda: get_env("DASHSCOPE_API_KEY", required=True))
     # Standard OpenAI-compatible endpoint for Alibaba Cloud
@@ -90,6 +106,7 @@ class ModelTier(Enum):
 @dataclass
 class AppConfig:
     voyage: VoyageConfig = field(default_factory=VoyageConfig)
+    rerank: RerankConfig = field(default_factory=RerankConfig)
     qwen: QwenConfig = field(default_factory=QwenConfig)
     qdrant: QdrantConfig = field(default_factory=QdrantConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
@@ -101,5 +118,5 @@ class AppConfig:
 try:
     config = AppConfig()
 except Exception as e:
-    print(f"⚠️ Configuration Warning: {e}")
+    print(f"âš ï¸ Configuration Warning: {e}")
     config = None

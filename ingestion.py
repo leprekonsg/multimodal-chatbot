@@ -145,7 +145,7 @@ class MultiVectorStore:
             
             self._collection_ready = True
         except Exception as e:
-            print(f"âŒ Failed to ensure collection: {e}")
+            print(f"Ã¢ÂÅ’ Failed to ensure collection: {e}")
             raise
     
     @property
@@ -248,50 +248,69 @@ class EnhancedIngestionPipeline:
         stored = await storage.upload(image_data, filename)
         print(f"[Ingestion] Stored at: {stored.url}")
         
-        # 2. Generate caption (with structured extraction)
-        caption = None
+        # 2. Generate caption (with structured extraction for visual grounding)
+        caption_for_embedding = None
+        caption_display = None
+        structured_data = {}
+        
         if not skip_caption:
-            print(f"[Ingestion] Generating caption...")
+            print(f"[Ingestion] Generating structured caption...")
             # Retry logic for VLM calls
             for attempt in range(2):
                 try:
-                    caption = await self._generate_structured_caption(
+                    # Get page number from metadata if available (for PDFs)
+                    page_number = metadata.get("page_number") if metadata else None
+                    
+                    caption_for_embedding, structured_data = await self._generate_structured_caption(
                         image_data, 
                         filename,
-                        stored.url
+                        stored.url,
+                        page_number=page_number
                     )
-                    print(f"[Ingestion] Caption generated: {caption[:150]}..." if len(caption) > 150 else f"[Ingestion] Caption: {caption}")
+                    
+                    # Use description for display, full caption for embedding
+                    caption_display = structured_data.get("description", caption_for_embedding)
+                    
+                    print(f"[Ingestion] Caption: {caption_display[:150]}..." if len(caption_display) > 150 else f"[Ingestion] Caption: {caption_display}")
                     break
                 except Exception as e:
-                    print(f"âš ï¸ Caption attempt {attempt+1} failed: {e}")
+                    print(f"Warning: Caption attempt {attempt+1} failed: {e}")
                     if attempt == 1:
                         print("Skipping caption generation due to repeated errors.")
-                        caption = "Image description unavailable."
+                        caption_for_embedding = "Image description unavailable."
+                        caption_display = caption_for_embedding
+                        structured_data = {}
         
         # 3. Generate multi-vector embeddings
+        # The caption_for_embedding includes contextual prefix for better retrieval
         try:
             mv_embedding = await voyage_embedder_v2.encode_document_multivector(
                 image=image_data,
-                caption=caption,
+                caption=caption_for_embedding,
                 extracted_text=extracted_text
             )
         except Exception as e:
-            print(f"âŒ Embedding generation failed: {e}")
+            print(f"ERROR: Embedding generation failed: {e}")
             raise
         
         # 4. Generate sparse vector from text content
-        text_for_sparse = f"{caption or ''}\n{extracted_text or ''}".strip()
+        text_for_sparse = f"{caption_for_embedding or ''}\n{extracted_text or ''}".strip()
         sparse_vector = sparse_embedder_v2.encode(text_for_sparse)
         
-        # 5. Build payload
+        # 5. Build payload with structured data for visual grounding
         payload = {
             "type": DocumentType.IMAGE.value,
             "url": stored.url,
-            "caption": caption,
+            "caption": caption_display,  # Display caption (without prefix)
+            "caption_full": caption_for_embedding,  # Full caption with contextual prefix
             "extracted_text": extracted_text,
             "filename": filename,
             "storage_id": stored.id,
             "created_at": datetime.utcnow().isoformat(),
+            # Structured data for visual grounding
+            "components": structured_data.get("components", []),
+            "document_type": structured_data.get("document_type", ""),
+            "key_topics": structured_data.get("key_topics", []),
             **metadata
         }
         
@@ -314,29 +333,44 @@ class EnhancedIngestionPipeline:
         if sparse_vector.get("indices"):
             vectors_stored.append(f"sparse({len(sparse_vector['indices'])} terms)")
         print(f"[Ingestion] Stored vectors: {vectors_stored}")
+        
+        # Log component extraction
+        num_components = len(structured_data.get("components", []))
+        if num_components > 0:
+            print(f"[Ingestion] Visual grounding: {num_components} components indexed")
+        
         print(f"[Ingestion] Complete! doc_id={doc_id}")
         
         return IngestedDocumentV2(
             id=doc_id,
             type=DocumentType.IMAGE,
             url=stored.url,
-            caption=caption,
+            caption=caption_display,
             text=extracted_text,
             fingerprint=mv_embedding.fingerprint.to_dict() if mv_embedding.fingerprint else None,
-            metadata=metadata
+            metadata={**(metadata or {}), "components": structured_data.get("components", [])}
         )
     
     async def _generate_structured_caption(
         self,
         image_data: bytes,
         filename: str,
-        stored_url: str
-    ) -> str:
+        stored_url: str,
+        page_number: int = None
+    ) -> tuple:
         """
         Generate comprehensive caption with structured extraction.
         
-        Handles the "localhost" problem: if the storage URL is local,
-        we must send base64 data to the cloud VLM.
+        Returns:
+            tuple: (caption_for_embedding, structured_data)
+            
+        The caption_for_embedding includes the contextual retrieval prefix
+        which improves retrieval accuracy by 67% (Anthropic research).
+        
+        The structured_data includes:
+        - components: List of identified components with bounding boxes
+        - document_type: Classification of the page type
+        - key_topics: Main topics covered
         """
         # Handle localhost URLs (Cloud VLM can't reach localhost)
         caption_input = stored_url
@@ -350,13 +384,49 @@ class EnhancedIngestionPipeline:
             b64_data = base64.b64encode(image_data).decode('utf-8')
             caption_input = f"data:{mime_type};base64,{b64_data}"
         
-        # Use enhanced prompt for better structured extraction
-        caption = await qwen_client.caption_image(
-            image_url=caption_input,
-            detail_level="high"
-        )
-        
-        return caption
+        # Try structured extraction first (enables visual grounding + contextual retrieval)
+        try:
+            structured = await qwen_client.caption_image_structured(
+                image_url=caption_input,
+                filename=filename,
+                page_number=page_number
+            )
+            
+            # Build caption with contextual prefix for better retrieval
+            context_prefix = structured.get("context_prefix", "")
+            description = structured.get("description", "")
+            transcribed_text = structured.get("transcribed_text", "")
+            
+            # Combine for embedding: prefix + description + transcribed text
+            caption_for_embedding = f"{context_prefix}{description}"
+            if transcribed_text:
+                caption_for_embedding += f"\n\n[Text on page]: {transcribed_text}"
+            
+            print(f"[Ingestion] Structured extraction: {len(structured.get('components', []))} components detected")
+            
+            return caption_for_embedding, structured
+            
+        except Exception as e:
+            print(f"⚠️ Structured caption failed, falling back to simple: {e}")
+            
+            # Fallback to simple captioning
+            caption = await qwen_client.caption_image(
+                image_url=caption_input,
+                detail_level="high"
+            )
+            
+            # Create minimal structured data
+            simple_prefix = f"[Source: {filename or 'Document'}"
+            if page_number:
+                simple_prefix += f", Page {page_number}"
+            simple_prefix += "] "
+            
+            return f"{simple_prefix}{caption}", {
+                "description": caption,
+                "transcribed_text": "",
+                "context_prefix": simple_prefix,
+                "components": []
+            }
     
     async def ingest_text(
         self,

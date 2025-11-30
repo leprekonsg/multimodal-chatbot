@@ -66,10 +66,10 @@ class QwenClient:
                     b64 = base64.b64encode(data).decode("utf-8")
                     return f"data:{mime};base64,{b64}"
                 else:
-                    print(f"âŒ File not found at: {local_path}")
+                    print(f"Ã¢ÂÅ’ File not found at: {local_path}")
                     return None
             except Exception as e:
-                print(f"âš ï¸ Failed to convert local image {url}: {e}")
+                print(f"Ã¢Å¡Â Ã¯Â¸Â Failed to convert local image {url}: {e}")
                 return None
                 
         return url
@@ -116,8 +116,293 @@ If this is a chart/diagram, describe the data patterns and trends."""
             return response.choices[0].message.content
             
         except Exception as e:
-            print(f"âŒ Qwen Caption Error: {e}")
+            print(f"Ã¢ÂÅ’ Qwen Caption Error: {e}")
             raise
+
+    async def caption_image_structured(
+        self,
+        image_url: str,
+        filename: str = None,
+        page_number: int = None
+    ) -> Dict[str, Any]:
+        """
+        Generate structured caption with component bounding boxes for technical manuals.
+        
+        This enables:
+        1. Better search indexing (contextual retrieval)
+        2. Visual grounding at query time (technicians can locate components)
+        3. Precise citations in responses
+        
+        Returns:
+            {
+                "description": "Overall page description",
+                "transcribed_text": "All visible text",
+                "context_prefix": "Contextual retrieval prefix",
+                "components": [
+                    {"name": "component", "bbox": [[x1,y1,x2,y2]], "description": "..."}
+                ]
+            }
+        
+        Note: Qwen3-VL outputs coordinates in [0-1000] normalized format.
+        """
+        final_url = self._process_image_url(image_url)
+        
+        if not final_url:
+            raise ValueError(f"Could not resolve image: {image_url}")
+        
+        # Build context string for the prompt
+        source_context = ""
+        if filename:
+            source_context = f"Source: {filename}"
+            if page_number:
+                source_context += f", Page {page_number}"
+        
+        prompt = f"""Analyze this technical manual page. {source_context}
+
+Your task is to extract structured information for a search system that helps technicians find information.
+
+Provide your response in this exact JSON format:
+{{
+    "description": "A detailed description of what this page shows (2-3 sentences)",
+    "document_type": "diagram|procedure|table|schematic|specification|other",
+    "transcribed_text": "ALL visible text, numbers, labels, part numbers transcribed exactly",
+    "key_topics": ["topic1", "topic2"],
+    "components": [
+        {{
+            "name": "component or part name",
+            "bbox": [[x1, y1, x2, y2]],
+            "type": "button|valve|connector|label|warning|other"
+        }}
+    ]
+}}
+
+Important:
+- Transcribe ALL text exactly as shown (error codes, part numbers, measurements)
+- For components, provide bounding box coordinates in [0-1000] normalized format
+- List 3-8 most important/identifiable components
+- For diagrams/schematics, identify key labeled parts"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=ModelTier.FLASH.value,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": final_url}},
+                        {"type": "text", "text": prompt}
+                    ]
+                }],
+                max_tokens=config.qwen.caption_max_tokens + 200  # Extra for JSON structure
+            )
+            
+            if response.usage:
+                tracker.track_qwen(
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+            
+            raw_response = response.choices[0].message.content
+            
+            # Parse JSON response
+            try:
+                # Handle potential markdown code blocks
+                if "```json" in raw_response:
+                    raw_response = raw_response.split("```json")[1].split("```")[0]
+                elif "```" in raw_response:
+                    raw_response = raw_response.split("```")[1].split("```")[0]
+                
+                structured = json.loads(raw_response.strip())
+                
+                # Generate contextual retrieval prefix
+                # This is prepended to captions before embedding (67% error reduction)
+                context_prefix = self._generate_context_prefix(
+                    structured, filename, page_number
+                )
+                structured["context_prefix"] = context_prefix
+                
+                return structured
+                
+            except json.JSONDecodeError:
+                # Fallback: return raw caption if JSON parsing fails
+                print(f"Warning: JSON parsing failed, using plain caption")
+                return {
+                    "description": raw_response,
+                    "transcribed_text": "",
+                    "context_prefix": f"[{filename or 'Document'}{f', Page {page_number}' if page_number else ''}] ",
+                    "components": []
+                }
+            
+        except Exception as e:
+            print(f"Qwen Structured Caption Error: {e}")
+            raise
+
+    def _generate_context_prefix(
+        self,
+        structured: Dict[str, Any],
+        filename: str = None,
+        page_number: int = None
+    ) -> str:
+        """
+        Generate contextual retrieval prefix.
+        
+        Research: Anthropic's contextual retrieval shows 67% error reduction
+        by prepending chunk-specific context before embedding.
+        
+        For technical manuals, we include:
+        - Source file and page
+        - Document type
+        - Key topics
+        """
+        parts = []
+        
+        # Source identification
+        if filename:
+            source = filename.replace("_", " ").replace("-", " ")
+            if page_number:
+                source += f", Page {page_number}"
+            parts.append(f"[Source: {source}]")
+        
+        # Document type
+        doc_type = structured.get("document_type", "").lower()
+        if doc_type and doc_type != "other":
+            type_labels = {
+                "diagram": "Technical Diagram",
+                "procedure": "Procedure/Instructions",
+                "table": "Data Table/Specifications",
+                "schematic": "Schematic/Wiring Diagram",
+                "specification": "Specifications/Parameters"
+            }
+            parts.append(f"[Type: {type_labels.get(doc_type, doc_type.title())}]")
+        
+        # Key topics
+        topics = structured.get("key_topics", [])
+        if topics:
+            parts.append(f"[Topics: {', '.join(topics[:3])}]")
+        
+        return " ".join(parts) + " " if parts else ""
+
+    async def visual_grounding(
+        self,
+        image_url: str,
+        query: str,
+        existing_components: List[Dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Locate specific elements in an image based on user query.
+        
+        This is the query-time visual grounding capability that enables
+        technicians to ask "where is the reset button?" and get precise
+        bounding box coordinates on the relevant page.
+        
+        Args:
+            image_url: URL or base64 of the source image
+            query: User's localization query (e.g., "where is the valve?")
+            existing_components: Pre-extracted components from ingestion (optional)
+        
+        Returns:
+            {
+                "found": True/False,
+                "element": "name of located element",
+                "bbox": [[x1, y1, x2, y2]],
+                "description": "explanation of what was found",
+                "confidence": "high/medium/low"
+            }
+        
+        Note: Coordinates are normalized to [0-1000] range.
+        Frontend should scale to actual image dimensions.
+        """
+        final_url = self._process_image_url(image_url)
+        
+        if not final_url:
+            return {
+                "found": False,
+                "error": "Could not load image"
+            }
+        
+        # Check if we can use pre-extracted components
+        if existing_components:
+            # Simple keyword matching against pre-extracted components
+            query_lower = query.lower()
+            for comp in existing_components:
+                comp_name = comp.get("name", "").lower()
+                if any(word in comp_name for word in query_lower.split()):
+                    return {
+                        "found": True,
+                        "element": comp.get("name"),
+                        "bbox": comp.get("bbox"),
+                        "description": f"Found '{comp.get('name')}' from pre-indexed components",
+                        "confidence": "high",
+                        "source": "indexed"
+                    }
+        
+        # Fall back to real-time visual grounding via VLM
+        prompt = f"""Locate in this image: "{query}"
+
+If you can find it, respond with:
+{{
+    "found": true,
+    "element": "exact name of what you found",
+    "bbox": [[x1, y1, x2, y2]],
+    "description": "brief description of the element and its location",
+    "confidence": "high" or "medium" or "low"
+}}
+
+If you cannot find it, respond with:
+{{
+    "found": false,
+    "reason": "why it couldn't be found",
+    "suggestions": ["alternative things to search for"]
+}}
+
+Use coordinates in [0-1000] normalized range where (0,0) is top-left and (1000,1000) is bottom-right.
+Respond ONLY with valid JSON."""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=ModelTier.PLUS.value,  # Use Plus for better grounding
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": final_url}},
+                        {"type": "text", "text": prompt}
+                    ]
+                }],
+                max_tokens=300
+            )
+            
+            if response.usage:
+                tracker.track_qwen(
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+            
+            raw_response = response.choices[0].message.content
+            
+            try:
+                # Clean and parse JSON
+                if "```" in raw_response:
+                    raw_response = raw_response.split("```")[1]
+                    if raw_response.startswith("json"):
+                        raw_response = raw_response[4:]
+                    raw_response = raw_response.split("```")[0]
+                
+                result = json.loads(raw_response.strip())
+                result["source"] = "realtime_grounding"
+                return result
+                
+            except json.JSONDecodeError:
+                return {
+                    "found": False,
+                    "error": "Failed to parse grounding response",
+                    "raw_response": raw_response[:200]
+                }
+            
+        except Exception as e:
+            print(f"Visual Grounding Error: {e}")
+            return {
+                "found": False,
+                "error": str(e)
+            }
 
     async def generate_response(
         self,
@@ -212,7 +497,7 @@ Instructions:
             )
             
         except Exception as e:
-            print(f"âŒ Qwen Generation Error: {e}")
+            print(f"Ã¢ÂÅ’ Qwen Generation Error: {e}")
             raise
     
     async def generate_response_stream(
@@ -282,7 +567,7 @@ Answer based on the context. If information is missing, clearly state that."""
                     yield chunk.choices[0].delta.content
                     
         except Exception as e:
-            print(f"âŒ Qwen Stream Error: {e}")
+            print(f"Ã¢ÂÅ’ Qwen Stream Error: {e}")
             raise
     
     async def analyze_sentiment(self, text: str) -> float:

@@ -27,6 +27,7 @@ from embeddings import (
     ImageFingerprint,
     PerceptualHasher
 )
+from reranking import reranker
 
 
 class QueryIntent(Enum):
@@ -297,10 +298,10 @@ class ConfidenceCalculator:
         
         # Diagnostic logging
         if verbose:
-            print(f"📊 [Confidence] Top scores: {top_scores}")
-            print(f"📊 [Confidence] Best score: {top_score:.4f} from {top_score_source}")
-            print(f"📊 [Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f}")
-            print(f"📊 [Confidence] Final: {confidence:.2%}")
+            print(f"ðŸ“Š [Confidence] Top scores: {top_scores}")
+            print(f"ðŸ“Š [Confidence] Best score: {top_score:.4f} from {top_score_source}")
+            print(f"ðŸ“Š [Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f}")
+            print(f"ðŸ“Š [Confidence] Final: {confidence:.2%}")
         
         return confidence
 
@@ -362,9 +363,9 @@ class HybridRetrieverV2:
         
         # Classify query intent
         query_intent = self.classifier.classify(query_text, query_image is not None)
-        print(f"ðŸ” [Retrieval] Query intent: {query_intent.value}")
-        print(f"ðŸ” [Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
-        print(f"ðŸ” [Retrieval] Has image: {query_image is not None}")
+        print(f"Ã°Å¸â€Â [Retrieval] Query intent: {query_intent.value}")
+        print(f"Ã°Å¸â€Â [Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
+        print(f"Ã°Å¸â€Â [Retrieval] Has image: {query_image is not None}")
         
         # Build filter
         search_filter = None
@@ -377,13 +378,13 @@ class HybridRetrieverV2:
             )
         
         # Generate query embeddings
-        print(f"â³ [Retrieval] Generating query embeddings...")
+        print(f"Ã¢ÂÂ³ [Retrieval] Generating query embeddings...")
         query_embeddings = await voyage_embedder_v2.encode_query_adaptive(
             text=query_text,
             image=query_image,
             query_intent=query_intent.value
         )
-        print(f"âœ… [Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
+        print(f"Ã¢Å“â€¦ [Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
         
         # Strategy 1: Exact match via perceptual hash (if image provided)
         exact_results = []
@@ -486,11 +487,26 @@ class HybridRetrieverV2:
         
         # Fuse results using weighted RRF
         fused = self._weighted_rrf(results_dict, query_intent)
-        top_results = fused[:top_k]
         
         # Log search results
-        print(f"ðŸ“‹ [Retrieval] Strategies used: {strategies_used}")
-        print(f"ðŸ“‹ [Retrieval] Results per strategy: {{{', '.join(f'{k}: {len(v)}' for k, v in results_dict.items())}}}")
+        print(f"📋 [Retrieval] Strategies used: {strategies_used}")
+        print(f"📋 [Retrieval] Results per strategy: {{{', '.join(f'{k}: {len(v)}' for k, v in results_dict.items())}}}")
+        
+        # === RERANKING STAGE (20-48% accuracy improvement) ===
+        # Research: Cross-encoder reranking is the highest-impact optimization
+        # We rerank top 50 candidates to get precise top_k results
+        if query_text and len(fused) > 1:
+            try:
+                print(f"🔄 [Retrieval] Reranking {min(len(fused), config.rerank.candidates_to_rerank)} candidates...")
+                fused = await reranker.rerank(
+                    query=query_text,
+                    documents=fused,
+                    top_k=top_k
+                )
+            except Exception as e:
+                print(f"⚠️ [Retrieval] Reranking failed, using RRF order: {e}")
+        
+        top_results = fused[:top_k]
         
         # Convert to documents with match details
         documents = []
@@ -522,11 +538,11 @@ class HybridRetrieverV2:
         # Log results summary
         if documents:
             top_doc = documents[0]
-            print(f"ðŸŽ¯ [Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
-            print(f"ðŸ“„ [Retrieval] Caption: {(top_doc.caption or 'None')[:150]}...")
+            print(f"Ã°Å¸Å½Â¯ [Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
+            print(f"Ã°Å¸â€œâ€ž [Retrieval] Caption: {(top_doc.caption or 'None')[:150]}...")
         else:
-            print(f"âš ï¸ [Retrieval] No documents found!")
-        print(f"ðŸ“Š [Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
+            print(f"Ã¢Å¡Â Ã¯Â¸Â [Retrieval] No documents found!")
+        print(f"Ã°Å¸â€œÅ  [Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
         
         return RetrievalResultV2(
             documents=documents,
