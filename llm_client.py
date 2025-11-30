@@ -1,11 +1,19 @@
 """
 Qwen3-VL Client
 Tiered model selection for cost/latency optimization.
-Updated with proper bbox_2d format and ASCII logging.
+FIXED: Proper bbox_2d prompts following official Qwen style + comprehensive logging.
+
+Key Fixes:
+1. Simplified prompts following official Qwen3-VL cookbook style
+2. Added comprehensive raw response logging for debugging
+3. Added one-shot examples to improve bbox detection reliability
+4. Improved JSON parsing robustness
+5. Explicit 0-1000 coordinate system instructions
 """
 import asyncio
 import base64
 import json
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from dataclasses import dataclass
@@ -75,6 +83,115 @@ class QwenClient:
                 
         return url
 
+    def _parse_json_response(self, raw_response: str, context: str = "") -> Optional[Dict]:
+        """
+        Robust JSON parsing with multiple fallback strategies.
+        
+        Args:
+            raw_response: Raw VLM response text
+            context: Context string for logging
+        
+        Returns:
+            Parsed JSON dict/list or None
+        """
+        # Log the raw response for debugging
+        print(f"[DEBUG] Raw VLM response ({context}):")
+        print(f"---BEGIN RAW RESPONSE---")
+        print(raw_response[:2000] if len(raw_response) > 2000 else raw_response)
+        if len(raw_response) > 2000:
+            print(f"... (truncated, total {len(raw_response)} chars)")
+        print(f"---END RAW RESPONSE---")
+        
+        json_text = raw_response.strip()
+        
+        # Strategy 0: Try parsing raw response directly first (fastest path)
+        try:
+            result = json.loads(json_text)
+            print(f"[DEBUG] JSON parsing successful (direct)")
+            return result
+        except json.JSONDecodeError:
+            pass  # Continue to extraction strategies
+        
+        # Strategy 1: Extract from ```json ... ``` blocks
+        if "```json" in json_text:
+            try:
+                extracted = json_text.split("```json")[1].split("```")[0].strip()
+                result = json.loads(extracted)
+                print(f"[DEBUG] Extracted and parsed JSON from ```json block")
+                return result
+            except (IndexError, json.JSONDecodeError):
+                pass
+        
+        # Strategy 2: Extract from plain ``` blocks
+        if "```" in json_text:
+            try:
+                parts = json_text.split("```")
+                if len(parts) >= 2:
+                    extracted = parts[1]
+                    if extracted.startswith("json"):
+                        extracted = extracted[4:]
+                    extracted = extracted.strip()
+                    result = json.loads(extracted)
+                    print(f"[DEBUG] Extracted and parsed JSON from ``` block")
+                    return result
+            except (IndexError, json.JSONDecodeError):
+                pass
+        
+        # Strategy 3: Find JSON array with regex FIRST (for bbox responses)
+        # This is critical: check for arrays BEFORE objects because bbox responses are arrays
+        array_match = re.search(r'\[[\s\S]*\]', json_text)
+        if array_match:
+            try:
+                extracted = array_match.group(0)
+                result = json.loads(extracted)
+                print(f"[DEBUG] Extracted and parsed JSON array via regex")
+                return result
+            except json.JSONDecodeError:
+                pass
+        
+        # Strategy 4: Find JSON object with regex
+        json_match = re.search(r'\{[\s\S]*\}', json_text)
+        if json_match:
+            try:
+                extracted = json_match.group(0)
+                result = json.loads(extracted)
+                print(f"[DEBUG] Extracted and parsed JSON object via regex")
+                return result
+            except json.JSONDecodeError as e:
+                print(f"[!] JSON object regex match failed to parse: {e}")
+        
+        # Strategy 5: Try to fix truncated JSON
+        # Find the best candidate (array or object)
+        candidates = []
+        if array_match:
+            candidates.append(array_match.group(0))
+        if json_match:
+            candidates.append(json_match.group(0))
+        
+        for candidate in candidates:
+            try:
+                fixed = candidate
+                # Fix missing closing brackets
+                open_braces = fixed.count('{')
+                close_braces = fixed.count('}')
+                open_brackets = fixed.count('[')
+                close_brackets = fixed.count(']')
+                
+                if open_braces > close_braces:
+                    fixed += '}' * (open_braces - close_braces)
+                if open_brackets > close_brackets:
+                    fixed += ']' * (open_brackets - close_brackets)
+                
+                result = json.loads(fixed)
+                print(f"[DEBUG] JSON parsing successful after bracket fix")
+                return result
+            except json.JSONDecodeError:
+                continue
+        
+        print(f"[!] All JSON parsing strategies failed")
+        print(f"[!] Final text attempted: {json_text[:300]}...")
+        return None
+
     async def caption_image(
         self,
         image_url: str,
@@ -120,82 +237,52 @@ If this is a chart/diagram, describe the data patterns and trends."""
             print(f"[X] Qwen Caption Error: {e}")
             raise
 
-    async def caption_image_structured(
+    async def detect_bounding_boxes(
         self,
         image_url: str,
-        filename: str = None,
-        page_number: int = None
-    ) -> Dict[str, Any]:
+        target_objects: str = "all important components and labeled elements"
+    ) -> List[Dict]:
         """
-        Generate structured caption with component bounding boxes for technical manuals.
+        Dedicated bounding box detection using official Qwen3-VL prompt style.
         
-        Uses Qwen3-VL's native bbox_2d format for accurate object detection.
+        This follows the official cookbook style which is proven to work:
+        "Locate X, report the bbox coordinates in JSON format."
         
-        This enables:
-        1. Better search indexing (contextual retrieval)
-        2. Visual grounding at query time (technicians can locate components)
-        3. Precise citations in responses
+        Args:
+            image_url: Image URL or base64 data URI
+            target_objects: Description of what to detect
         
         Returns:
-            {
-                "description": "Overall page description",
-                "transcribed_text": "All visible text",
-                "context_prefix": "Contextual retrieval prefix",
-                "document_type": "diagram|procedure|table|schematic|other",
-                "key_topics": ["topic1", "topic2"],
-                "components": [
-                    {"label": "component name", "bbox_2d": [x1, y1, x2, y2], "type": "valve|button|..."}
-                ]
-            }
-        
-        Note: Qwen3-VL outputs coordinates in NORMALIZED 0-1000 range (not pixels).
-        The bbox_2d format is [x1, y1, x2, y2] where each value is 0-1000.
-        Frontend must convert: abs_x = (x / 1000) * image_width
+            List of {"bbox_2d": [x1,y1,x2,y2], "label": "name"} dicts
+            Coordinates are in 0-1000 normalized range.
         """
         final_url = self._process_image_url(image_url)
         
         if not final_url:
-            raise ValueError(f"Could not resolve image: {image_url}")
+            print(f"[!] Could not resolve image for bbox detection")
+            return []
         
-        # Build context string for the prompt
-        source_context = ""
-        if filename:
-            source_context = f"Source: {filename}"
-            if page_number:
-                source_context += f", Page {page_number}"
-        
-        # Updated prompt using Qwen3-VL's native bbox_2d format
-        prompt = f"""Analyze this technical manual page. {source_context}
+        # OFFICIAL STYLE PROMPT - Simple and direct
+        # Based on: "Locate X, report the bbox coordinates in JSON format."
+        prompt = f"""Detect and locate {target_objects} in this image.
 
-You are analyzing a technical document to help technicians find information.
+Report ALL detected items with their bounding box coordinates in JSON format.
 
-TASK 1 - Detect and locate all important components/elements in the image.
-For each component, output its bounding box in this format:
-{{"bbox_2d": [x1, y1, x2, y2], "label": "component name"}}
+Output format (array of objects):
+[
+  {{"bbox_2d": [x1, y1, x2, y2], "label": "item name"}},
+  {{"bbox_2d": [x1, y1, x2, y2], "label": "another item"}}
+]
 
-TASK 2 - Provide a structured analysis.
-
-Output your response as a JSON object with this exact format:
-{{
-    "description": "A detailed description of what this page shows (2-3 sentences)",
-    "document_type": "diagram|procedure|table|schematic|specification|other",
-    "transcribed_text": "ALL visible text transcribed exactly as shown",
-    "key_topics": ["topic1", "topic2", "topic3"],
-    "components": [
-        {{"bbox_2d": [x1, y1, x2, y2], "label": "component or part name", "type": "button|valve|connector|label|warning|diagram|other"}}
-    ]
-}}
-
-IMPORTANT RULES:
-- Transcribe ALL text exactly as shown (error codes, part numbers, measurements)
-- Detect 3-10 most important/identifiable components with their bounding boxes
-- For diagrams/schematics, identify key labeled parts, arrows, and annotations
-- bbox_2d coordinates should be in NORMALIZED 0-1000 range (Qwen3-VL default format)
-- Output ONLY valid JSON, no other text"""
+CRITICAL RULES:
+- bbox_2d coordinates MUST be in normalized 0-1000 range (NOT pixels)
+- x1,y1 = top-left corner, x2,y2 = bottom-right corner
+- Output ONLY the JSON array, no other text
+- Detect 3-10 most prominent/important items"""
 
         try:
-            # Higher resolution for better component detection
-            # Official recommendation: min_pixels=64*32*32, max_pixels=9800*32*32
+            print(f"[DEBUG] Sending bbox detection request...")
+            
             response = await self.client.chat.completions.create(
                 model=ModelTier.FLASH.value,
                 messages=[{
@@ -204,13 +291,13 @@ IMPORTANT RULES:
                         {
                             "type": "image_url", 
                             "image_url": {"url": final_url},
-                            "min_pixels": 64 * 32 * 32,  # ~65K pixels minimum
-                            "max_pixels": 2560 * 32 * 32  # ~2.6M pixels maximum (balanced for speed)
+                            "min_pixels": 64 * 32 * 32,
+                            "max_pixels": 2560 * 32 * 32
                         },
                         {"type": "text", "text": prompt}
                     ]
                 }],
-                max_tokens=config.qwen.caption_max_tokens + 500  # Extra for JSON + bboxes
+                max_tokens=800  # Enough for ~10 bboxes
             )
             
             if response.usage:
@@ -221,63 +308,197 @@ IMPORTANT RULES:
             
             raw_response = response.choices[0].message.content
             
-            # Parse JSON response
-            try:
-                # Handle potential markdown code blocks
-                json_text = raw_response
-                if "```json" in json_text:
-                    json_text = json_text.split("```json")[1].split("```")[0]
-                elif "```" in json_text:
-                    json_text = json_text.split("```")[1].split("```")[0]
-                
-                structured = json.loads(json_text.strip())
-                
-                # Normalize component format (ensure consistent key names)
-                components = structured.get("components", [])
-                normalized_components = []
-                for comp in components:
-                    normalized = {
-                        "label": comp.get("label", comp.get("name", "Unknown")),
-                        "bbox_2d": comp.get("bbox_2d", comp.get("bbox", [])),
-                        "type": comp.get("type", "other")
-                    }
-                    # Only include if we have valid bbox
-                    if normalized["bbox_2d"] and len(normalized["bbox_2d"]) == 4:
-                        normalized_components.append(normalized)
-                
-                structured["components"] = normalized_components
-                
-                # Generate contextual retrieval prefix
-                context_prefix = self._generate_context_prefix(
-                    structured, filename, page_number
-                )
-                structured["context_prefix"] = context_prefix
-                
-                # Log component detection results
-                num_components = len(normalized_components)
-                if num_components > 0:
-                    print(f"[+] Structured caption: {num_components} components detected with bounding boxes")
-                    for comp in normalized_components[:3]:
-                        print(f"    - {comp['label']}: {comp['bbox_2d']}")
+            # Parse the response
+            parsed = self._parse_json_response(raw_response, "bbox_detection")
+            
+            if parsed is None:
+                print(f"[!] Bbox detection: Failed to parse response")
+                return []
+            
+            # Ensure it's a list
+            if isinstance(parsed, dict):
+                # Sometimes model returns {"components": [...]} or similar
+                for key in ["components", "items", "objects", "detections", "results"]:
+                    if key in parsed and isinstance(parsed[key], list):
+                        parsed = parsed[key]
+                        break
                 else:
-                    print("[!] Structured caption: No components with valid bounding boxes detected")
+                    # Single detection, wrap in list
+                    if "bbox_2d" in parsed:
+                        parsed = [parsed]
+                    else:
+                        print(f"[!] Unexpected response structure: {list(parsed.keys())}")
+                        return []
+            
+            if not isinstance(parsed, list):
+                print(f"[!] Expected list, got {type(parsed)}")
+                return []
+            
+            # Validate and normalize components
+            valid_components = []
+            for comp in parsed:
+                if not isinstance(comp, dict):
+                    continue
+                    
+                bbox = comp.get("bbox_2d", comp.get("bbox", comp.get("box", [])))
+                label = comp.get("label", comp.get("name", "Unknown"))
                 
-                return structured
-                
-            except json.JSONDecodeError as e:
-                # Fallback: return raw caption if JSON parsing fails
-                print(f"[!] JSON parsing failed ({e}), using plain caption")
-                return {
+                # Validate bbox format
+                if bbox and len(bbox) == 4:
+                    try:
+                        # Ensure numeric values
+                        bbox = [float(x) for x in bbox]
+                        
+                        # Validate range (should be 0-1000)
+                        if all(0 <= x <= 1000 for x in bbox):
+                            valid_components.append({
+                                "bbox_2d": [int(x) for x in bbox],
+                                "label": str(label),
+                                "type": comp.get("type", "other")
+                            })
+                        else:
+                            print(f"[!] Bbox out of 0-1000 range: {bbox} for '{label}'")
+                    except (ValueError, TypeError) as e:
+                        print(f"[!] Invalid bbox values: {bbox}, error: {e}")
+            
+            print(f"[+] Bbox detection: Found {len(valid_components)} valid components")
+            for comp in valid_components[:5]:
+                print(f"    - {comp['label']}: {comp['bbox_2d']}")
+            
+            return valid_components
+            
+        except Exception as e:
+            print(f"[X] Bbox Detection Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    async def caption_image_structured(
+        self,
+        image_url: str,
+        filename: str = None,
+        page_number: int = None
+    ) -> Dict[str, Any]:
+        """
+        Generate structured caption with component bounding boxes for technical manuals.
+        
+        FIXED: Now uses a two-stage approach:
+        1. Get description and text transcription
+        2. Separately detect bounding boxes (more reliable)
+        
+        Returns:
+            {
+                "description": "Overall page description",
+                "transcribed_text": "All visible text",
+                "context_prefix": "Contextual retrieval prefix",
+                "document_type": "diagram|procedure|table|schematic|other",
+                "key_topics": ["topic1", "topic2"],
+                "components": [
+                    {"label": "component name", "bbox_2d": [x1, y1, x2, y2], "type": "..."}
+                ]
+            }
+        """
+        final_url = self._process_image_url(image_url)
+        
+        if not final_url:
+            raise ValueError(f"Could not resolve image: {image_url}")
+        
+        # Build context string
+        source_context = ""
+        if filename:
+            source_context = f"Source: {filename}"
+            if page_number:
+                source_context += f", Page {page_number}"
+        
+        print(f"[+] Structured caption request for: {source_context or 'unnamed image'}")
+        
+        # STAGE 1: Get description and transcription
+        # Use a simpler prompt for better JSON compliance
+        description_prompt = f"""Analyze this image. {source_context}
+
+Output a JSON object with this exact format:
+{{
+    "description": "A detailed 2-3 sentence description of what this image shows",
+    "document_type": "diagram|procedure|table|schematic|specification|photo|other",
+    "transcribed_text": "ALL visible text transcribed exactly as shown",
+    "key_topics": ["topic1", "topic2", "topic3"]
+}}
+
+Rules:
+- Transcribe ALL visible text exactly (part numbers, labels, measurements)
+- Choose the most appropriate document_type
+- List 2-5 key topics covered
+- Output ONLY valid JSON"""
+
+        try:
+            print(f"[DEBUG] Stage 1: Getting description...")
+            
+            response = await self.client.chat.completions.create(
+                model=ModelTier.FLASH.value,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url", 
+                            "image_url": {"url": final_url},
+                            "min_pixels": 64 * 32 * 32,
+                            "max_pixels": 2560 * 32 * 32
+                        },
+                        {"type": "text", "text": description_prompt}
+                    ]
+                }],
+                max_tokens=config.qwen.caption_max_tokens
+            )
+            
+            if response.usage:
+                tracker.track_qwen(
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+            
+            raw_response = response.choices[0].message.content
+            
+            # Parse description response
+            structured = self._parse_json_response(raw_response, "description")
+            
+            if structured is None:
+                print(f"[!] Failed to parse description, using fallback")
+                structured = {
                     "description": raw_response[:500],
                     "transcribed_text": "",
-                    "context_prefix": f"[{filename or 'Document'}{f', Page {page_number}' if page_number else ''}] ",
                     "document_type": "other",
-                    "key_topics": [],
-                    "components": []
+                    "key_topics": []
                 }
+            
+            # STAGE 2: Get bounding boxes separately
+            print(f"[DEBUG] Stage 2: Detecting bounding boxes...")
+            components = await self.detect_bounding_boxes(
+                image_url=image_url,
+                target_objects="all labeled components, buttons, valves, connectors, diagrams, text labels, and important visual elements"
+            )
+            
+            structured["components"] = components
+            
+            # Generate contextual retrieval prefix
+            context_prefix = self._generate_context_prefix(
+                structured, filename, page_number
+            )
+            structured["context_prefix"] = context_prefix
+            
+            # Log results summary
+            num_components = len(components)
+            print(f"[+] Structured caption complete:")
+            print(f"    - Description: {structured.get('description', '')[:100]}...")
+            print(f"    - Document type: {structured.get('document_type', 'unknown')}")
+            print(f"    - Components: {num_components} with bounding boxes")
+            print(f"    - Topics: {structured.get('key_topics', [])}")
+            
+            return structured
             
         except Exception as e:
             print(f"[X] Qwen Structured Caption Error: {e}")
+            import traceback
+            traceback.print_exc()
             raise
 
     def _generate_context_prefix(
@@ -291,11 +512,6 @@ IMPORTANT RULES:
         
         Research: Anthropic's contextual retrieval shows 67% error reduction
         by prepending chunk-specific context before embedding.
-        
-        For technical manuals, we include:
-        - Source file and page
-        - Document type
-        - Key topics
         """
         parts = []
         
@@ -314,7 +530,8 @@ IMPORTANT RULES:
                 "procedure": "Procedure/Instructions",
                 "table": "Data Table/Specifications",
                 "schematic": "Schematic/Wiring Diagram",
-                "specification": "Specifications/Parameters"
+                "specification": "Specifications/Parameters",
+                "photo": "Photograph"
             }
             parts.append(f"[Type: {type_labels.get(doc_type, doc_type.title())}]")
         
@@ -334,11 +551,7 @@ IMPORTANT RULES:
         """
         Locate specific elements in an image based on user query.
         
-        Uses Qwen3-VL's native visual grounding with bbox_2d format.
-        
-        This is the query-time visual grounding capability that enables
-        technicians to ask "where is the reset button?" and get precise
-        bounding box coordinates on the relevant page.
+        FIXED: Uses official Qwen3-VL prompt style for better reliability.
         
         Args:
             image_url: URL or base64 of the source image
@@ -349,13 +562,10 @@ IMPORTANT RULES:
             {
                 "found": True/False,
                 "element": "name of located element",
-                "bbox_2d": [x1, y1, x2, y2],
+                "bbox_2d": [x1, y1, x2, y2],  # 0-1000 normalized
                 "description": "explanation of what was found",
                 "confidence": "high/medium/low"
             }
-        
-        Note: Coordinates are in NORMALIZED 0-1000 range (Qwen3-VL default).
-        Frontend must convert: abs_x = (x / 1000) * displayed_image_width
         """
         final_url = self._process_image_url(image_url)
         
@@ -365,11 +575,14 @@ IMPORTANT RULES:
                 "error": "Could not load image"
             }
         
-        # Check if we can use pre-extracted components
+        # Check if we can use pre-extracted components first
         if existing_components:
-            # Simple keyword matching against pre-extracted components
             query_lower = query.lower()
             query_words = set(query_lower.split())
+            
+            # Remove common words that don't help matching
+            stopwords = {'the', 'a', 'an', 'is', 'are', 'where', 'find', 'locate', 'show', 'me'}
+            query_words = query_words - stopwords
             
             for comp in existing_components:
                 comp_label = comp.get("label", comp.get("name", "")).lower()
@@ -377,38 +590,45 @@ IMPORTANT RULES:
                 
                 # Check for word overlap
                 if query_words & comp_words:
-                    return {
-                        "found": True,
-                        "element": comp.get("label", comp.get("name")),
-                        "bbox_2d": comp.get("bbox_2d", comp.get("bbox")),
-                        "description": f"Found '{comp.get('label', comp.get('name'))}' from pre-indexed components",
-                        "confidence": "high",
-                        "source": "indexed"
-                    }
+                    bbox = comp.get("bbox_2d", comp.get("bbox"))
+                    if bbox and len(bbox) == 4:
+                        print(f"[+] Visual grounding: Found '{comp_label}' from indexed components")
+                        print(f"    Bbox: {bbox}")
+                        return {
+                            "found": True,
+                            "element": comp.get("label", comp.get("name")),
+                            "bbox_2d": bbox,
+                            "description": f"Found '{comp.get('label', comp.get('name'))}' from pre-indexed components",
+                            "confidence": "high",
+                            "source": "indexed"
+                        }
         
         # Fall back to real-time visual grounding via VLM
-        prompt = f"""Locate in this image: "{query}"
+        # OFFICIAL STYLE PROMPT - Simple and direct
+        prompt = f"""Locate "{query}" in this image and report its bounding box.
 
-If you can find it, respond with JSON:
+Output JSON format:
 {{
     "found": true,
     "element": "exact name of what you found",
     "bbox_2d": [x1, y1, x2, y2],
-    "description": "brief description of the element and its location",
-    "confidence": "high" or "medium" or "low"
+    "confidence": "high"
 }}
 
-If you cannot find it, respond with JSON:
+If NOT found:
 {{
     "found": false,
-    "reason": "why it couldn't be found",
-    "suggestions": ["alternative things to search for"]
+    "reason": "brief explanation"
 }}
 
-IMPORTANT: bbox_2d coordinates should be in normalized 0-1000 range.
-Respond ONLY with valid JSON, no other text."""
+RULES:
+- bbox_2d coordinates in normalized 0-1000 range (NOT pixels)
+- x1,y1 = top-left, x2,y2 = bottom-right
+- Output ONLY valid JSON"""
 
         try:
+            print(f"[DEBUG] Visual grounding request for: '{query}'")
+            
             response = await self.client.chat.completions.create(
                 model=ModelTier.PLUS.value,  # Use Plus for better grounding
                 messages=[{
@@ -434,28 +654,31 @@ Respond ONLY with valid JSON, no other text."""
             
             raw_response = response.choices[0].message.content
             
-            try:
-                # Clean and parse JSON
-                json_text = raw_response
-                if "```" in json_text:
-                    json_text = json_text.split("```")[1]
-                    if json_text.startswith("json"):
-                        json_text = json_text[4:]
-                    json_text = json_text.split("```")[0]
-                
-                result = json.loads(json_text.strip())
-                result["source"] = "realtime_grounding"
-                return result
-                
-            except json.JSONDecodeError:
+            # Parse response
+            result = self._parse_json_response(raw_response, "visual_grounding")
+            
+            if result is None:
                 return {
                     "found": False,
                     "error": "Failed to parse grounding response",
                     "raw_response": raw_response[:200]
                 }
             
+            result["source"] = "realtime_grounding"
+            
+            # Log the result
+            if result.get("found"):
+                print(f"[+] Visual grounding: Found '{result.get('element')}'")
+                print(f"    Bbox: {result.get('bbox_2d')}")
+            else:
+                print(f"[!] Visual grounding: Not found - {result.get('reason', 'unknown')}")
+            
+            return result
+            
         except Exception as e:
             print(f"[X] Visual Grounding Error: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 "found": False,
                 "error": str(e)

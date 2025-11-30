@@ -290,16 +290,55 @@ async def chat_multimodal(
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(
+    message: str = Form(...),
+    image: Optional[UploadFile] = File(None),
+    conversation_id: Optional[str] = Form(None)
+):
+    """Streaming chat endpoint that supports multimodal input."""
     async def generate():
-        async for token in chatbot.chat(
-            message=request.message,
-            conversation_id=request.conversation_id,
-            stream=True
-        ):
-            yield f"data: {token}\n\n"
-        yield "data: [DONE]\n\n"
-    
+        try:
+            image_data = None
+            if image:
+                try:
+                    image_data = await image.read()
+                except Exception as e:
+                    print(f"⚠️ Failed to read uploaded image: {e}")
+                    # Continue without image
+
+            async for line in chatbot.chat_stream(
+                message=message,
+                image_data=image_data,
+                conversation_id=conversation_id
+            ):
+                # line is already JSON formatted from chatbot._stream_response
+                yield f"data: {line}\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            import json
+            import traceback
+            print("❌ Error in /chat/stream:")
+            traceback.print_exc()
+
+            # Send user-friendly error
+            error_data = json.dumps({
+                "type": "error",
+                "content": "An unexpected error occurred. Please try again."
+            })
+            yield f"data: {error_data}\n\n"
+
+            # Send minimal metadata so frontend doesn't hang
+            metadata = json.dumps({
+                "type": "metadata",
+                "sources": [],
+                "source_images": [],
+                "confidence": 0.0,
+                "latency_ms": 0,
+                "conversation_id": conversation_id or ""
+            })
+            yield f"data: {metadata}\n\n"
+            yield "data: [DONE]\n\n"
+
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 

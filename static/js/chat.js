@@ -144,50 +144,94 @@ imageModal.addEventListener('click', (e) => {
 // Simple markdown parser for basic formatting
 function parseMarkdown(text) {
     if (!text) return '';
-    
+
     // Escape HTML first to prevent XSS
     let html = text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
-    
+
     // Parse markdown elements
     // Bold: **text** or __text__
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-    
+
     // Italic: *text* or _text_
     html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
-    
+
     // Links: [text](url)
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    
+
     // Inline code: `code`
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    
-    // Convert numbered lists (1. item)
-    html = html.replace(/^(\d+)\.\s+(.+)$/gm, '<li>$2</li>');
-    // Wrap consecutive li elements in ol
-    html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ol>$&</ol>');
-    
-    // Convert bullet lists (- item or * item)
-    html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
-    
+
+    // Convert numbered lists (1. item) - handle multi-line lists properly
+    const lines = html.split('\n');
+    let inOrderedList = false;
+    let inUnorderedList = false;
+    const processedLines = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const isNumberedItem = /^\d+\.\s+(.+)$/.test(line);
+        const isBulletItem = /^[-*]\s+(.+)$/.test(line);
+
+        if (isNumberedItem) {
+            if (!inOrderedList) {
+                processedLines.push('<ol>');
+                inOrderedList = true;
+            }
+            if (inUnorderedList) {
+                processedLines.push('</ul>');
+                inUnorderedList = false;
+            }
+            processedLines.push(line.replace(/^\d+\.\s+(.+)$/, '<li>$1</li>'));
+        } else if (isBulletItem) {
+            if (!inUnorderedList) {
+                processedLines.push('<ul>');
+                inUnorderedList = true;
+            }
+            if (inOrderedList) {
+                processedLines.push('</ol>');
+                inOrderedList = false;
+            }
+            processedLines.push(line.replace(/^[-*]\s+(.+)$/, '<li>$1</li>'));
+        } else {
+            if (inOrderedList) {
+                processedLines.push('</ol>');
+                inOrderedList = false;
+            }
+            if (inUnorderedList) {
+                processedLines.push('</ul>');
+                inUnorderedList = false;
+            }
+            processedLines.push(line);
+        }
+    }
+
+    // Close any open lists
+    if (inOrderedList) processedLines.push('</ol>');
+    if (inUnorderedList) processedLines.push('</ul>');
+
+    html = processedLines.join('\n');
+
     // Paragraphs: double newlines
     html = html.replace(/\n\n+/g, '</p><p>');
-    
-    // Single newlines within paragraphs
-    html = html.replace(/\n/g, '<br>');
-    
+
+    // Single newlines within paragraphs (but not in lists)
+    html = html.replace(/(?<!<\/li>)\n(?!<[ou]l>)(?!<li>)(?!<\/[ou]l>)/g, '<br>');
+
     // Wrap in paragraph tags
     html = '<p>' + html + '</p>';
-    
-    // Clean up empty paragraphs
+
+    // Clean up paragraphs around lists
+    html = html.replace(/<p>(<[ou]l>)/g, '$1');
+    html = html.replace(/(<\/[ou]l>)<\/p>/g, '$1');
     html = html.replace(/<p>\s*<\/p>/g, '');
     html = html.replace(/<p><br>/g, '<p>');
     html = html.replace(/<br><\/p>/g, '</p>');
-    
+
     return html;
 }
 
@@ -436,67 +480,202 @@ function updateSources(sources, sourceImages) {
     });
 }
 
-// Send message
+// Create streaming assistant message container
+function createStreamingAssistantMessage() {
+    emptyState.style.display = 'none';
+
+    const msg = document.createElement('div');
+    msg.className = 'message assistant';
+
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    msg.innerHTML = `
+        <div class="message-header">
+            <span class="message-role">Console</span>
+            <span class="message-time">${time}</span>
+        </div>
+        <div class="message-content">
+            <p class="streaming-content"></p>
+            <span class="streaming-cursor">▋</span>
+        </div>
+    `;
+
+    messagesContainer.appendChild(msg);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    return msg;
+}
+
+// Update streaming message content
+function updateStreamingMessageContent(msgElement, text) {
+    const contentDiv = msgElement.querySelector('.streaming-content');
+    if (contentDiv) {
+        contentDiv.innerHTML = parseMarkdown(text);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+}
+
+// Update streaming message with final metadata
+function updateStreamingMessage(msgElement, text, metadata) {
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // Confidence level
+    let confClass = 'high';
+    let confLabel = 'High confidence';
+    if (metadata.confidence < 0.5) {
+        confClass = 'low';
+        confLabel = 'Low confidence';
+    } else if (metadata.confidence < 0.7) {
+        confClass = 'medium';
+        confLabel = 'Medium confidence';
+    }
+
+    // Check for escalation hint in message
+    let mainMessage = text;
+    let escalationHint = '';
+    if (mainMessage.includes("If this doesn't fully answer your question")) {
+        const parts = mainMessage.split(/\n\n_If this doesn't/);
+        mainMessage = parts[0];
+        if (parts[1]) {
+            escalationHint = `<div class="escalation-hint">💬 If this doesn't ${parts[1].replace(/_$/, '')}</div>`;
+        }
+    }
+
+    msgElement.innerHTML = `
+        <div class="message-header">
+            <span class="message-role">Console</span>
+            <span class="message-time">${time}</span>
+        </div>
+        <div class="message-content">
+            ${parseMarkdown(mainMessage)}
+            ${escalationHint}
+            <div class="confidence" title="${confLabel}">
+                <div class="confidence-bar">
+                    <div class="confidence-fill ${confClass}" style="width: ${metadata.confidence * 100}%"></div>
+                </div>
+                <span>${Math.round(metadata.confidence * 100)}%</span>
+            </div>
+        </div>
+    `;
+
+    // Update sources
+    updateSources(metadata.sources || [], metadata.source_images || []);
+}
+
+// Send message with streaming
 async function sendMessage() {
     const message = messageInput.value.trim();
     if (!message && !currentImage) return;
     if (isLoading) return;
-    
+
     isLoading = true;
     sendBtn.disabled = true;
-    
+
     // Show user message
     let imageDataUrl = null;
     if (currentImage) {
         imageDataUrl = previewImage.src;
     }
     addMessage('user', message, imageDataUrl);
-    
+
     // Clear input
     messageInput.value = '';
     messageInput.style.height = 'auto';
-    
+
     // Show typing
     showTyping();
-    
+
     try {
-        let response;
-        
+        // Prepare form data for streaming endpoint
+        const formData = new FormData();
+        formData.append('message', message);
         if (currentImage) {
-            // Multimodal request
-            const formData = new FormData();
-            formData.append('message', message);
             formData.append('image', currentImage);
-            if (conversationId) {
-                formData.append('conversation_id', conversationId);
-            }
-            
-            response = await fetch(`${API_BASE}/chat/multimodal`, {
-                method: 'POST',
-                body: formData
-            });
-        } else {
-            // Text-only request
-            response = await fetch(`${API_BASE}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: message,
-                    conversation_id: conversationId
-                })
-            });
         }
-        
+        if (conversationId) {
+            formData.append('conversation_id', conversationId);
+        }
+
+        // Use fetch with streaming
+        const response = await fetch(`${API_BASE}/chat/stream`, {
+            method: 'POST',
+            body: formData
+        });
+
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        
-        const data = await response.json();
-        conversationId = data.conversation_id;
-        
+
         hideTyping();
-        addAssistantMessage(data);
-        
+
+        // Create assistant message container for streaming
+        const assistantMsg = createStreamingAssistantMessage();
+
+        // Read the stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        let metadata = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete lines
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep incomplete line in buffer
+
+            for (const line of lines) {
+                if (!line.trim() || !line.startsWith('data: ')) continue;
+
+                const data = line.substring(6); // Remove 'data: ' prefix
+
+                if (data === '[DONE]') {
+                    // Stream complete
+                    if (metadata) {
+                        updateStreamingMessage(assistantMsg, fullText, metadata);
+                    }
+                    continue;
+                }
+
+                try {
+                    const parsed = JSON.parse(data);
+
+                    if (parsed.type === 'token') {
+                        fullText += parsed.content;
+                        updateStreamingMessageContent(assistantMsg, fullText);
+                    } else if (parsed.type === 'metadata') {
+                        metadata = parsed;
+                        conversationId = parsed.conversation_id;
+                    } else if (parsed.type === 'error') {
+                        fullText += '\n\n' + parsed.content;
+                        updateStreamingMessageContent(assistantMsg, fullText);
+                    }
+                } catch (e) {
+                    console.error('Error parsing stream data:', e, data);
+                }
+            }
+        }
+
+        // Final update with metadata
+        if (metadata) {
+            updateStreamingMessage(assistantMsg, fullText, metadata);
+        } else {
+            // Fallback if metadata never arrived
+            console.warn('No metadata received, using defaults');
+            const fallbackMetadata = {
+                sources: [],
+                source_images: [],
+                confidence: 0.0,
+                latency_ms: 0
+            };
+            updateStreamingMessage(assistantMsg, fullText || 'No response received.', fallbackMetadata);
+        }
+
     } catch (error) {
         console.error('Error:', error);
         hideTyping();

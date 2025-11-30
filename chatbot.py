@@ -74,6 +74,106 @@ class MultimodalChatbot:
         self.conversations[conv_id] = context
         return context
     
+    async def chat_stream(
+        self,
+        message: str,
+        image_data: bytes = None,
+        conversation_id: str = None,
+        user_metadata: Dict = None
+    ) -> AsyncGenerator[str, None]:
+        """
+        Streaming chat endpoint with comprehensive error handling.
+
+        Args:
+            message: User's text message
+            image_data: Optional image bytes from user
+            conversation_id: Existing conversation ID
+            user_metadata: User info for context
+
+        Yields:
+            JSON-formatted messages with tokens and metadata
+        """
+        import json
+        start_time = time.time()
+
+        try:
+            # Get conversation context
+            context = self.get_or_create_context(conversation_id, user_metadata)
+            context.add_message("user", message)
+
+            # Upload user image if provided
+            user_image_url = None
+            if image_data:
+                try:
+                    stored = await storage.upload(image_data, "user_upload.jpg")
+                    user_image_url = stored.url
+                except Exception as e:
+                    print(f"⚠️ Failed to upload user image: {e}")
+
+            # Rewrite query if we have conversation history
+            search_query = message
+            if len(context.messages) > 1:
+                try:
+                    search_query = await qwen_client.rewrite_query(
+                        history=context.messages[:-1],
+                        current_query=message
+                    )
+                except Exception as e:
+                    print(f"⚠️ Query rewrite failed: {e}")
+
+            # Step 1: Retrieve relevant documents
+            retrieval_result = None
+            try:
+                retrieval_result = await enhanced_retriever.retrieve(
+                    query_text=search_query,
+                    query_image=image_data,
+                    top_k=config.qdrant.top_k
+                )
+            except Exception as e:
+                print(f"❌ Retrieval failed: {e}")
+                traceback.print_exc()
+                # Fallback to empty result
+                retrieval_result = RetrievalResultV2(documents=[], confidence=0.0, query_intent=None)
+
+            # Build context for generation
+            context_text = self._build_context(retrieval_result.documents[:5])
+            image_urls = [
+                doc.url for doc in retrieval_result.documents
+                if doc.type == "image" and doc.url
+            ]
+
+            # Stream the response
+            async for chunk in self._stream_response(
+                query=message,
+                context_text=context_text,
+                image_urls=image_urls,
+                user_image_url=user_image_url,
+                retrieval_result=retrieval_result,
+                context=context,
+                start_time=start_time
+            ):
+                yield chunk
+
+        except Exception as e:
+            # Catastrophic failure - send error and minimal metadata
+            print(f"❌ Critical error in chat_stream: {e}")
+            traceback.print_exc()
+
+            error_message = "I encountered an error while processing your request. Please try again."
+            yield json.dumps({"type": "token", "content": error_message}) + "\n"
+
+            # Send minimal metadata
+            latency_ms = (time.time() - start_time) * 1000
+            metadata = {
+                "type": "metadata",
+                "sources": [],
+                "source_images": [],
+                "confidence": 0.0,
+                "latency_ms": latency_ms,
+                "conversation_id": conversation_id or "error"
+            }
+            yield json.dumps(metadata) + "\n"
+
     async def chat(
         self,
         message: str,
@@ -163,18 +263,6 @@ class MultimodalChatbot:
         ]
         
         # Step 4: Generate response
-        if stream:
-            # Return the async generator directly
-            return self._stream_response(
-                query=message,
-                context_text=context_text,
-                image_urls=image_urls,
-                user_image_url=user_image_url,
-                retrieval_result=retrieval_result,
-                context=context,
-                start_time=start_time
-            )
-        
         try:
             vlm_response = await qwen_client.generate_response(
                 query=message,
@@ -236,8 +324,9 @@ class MultimodalChatbot:
         start_time: float
     ) -> AsyncGenerator[str, None]:
         """Stream response tokens for better perceived latency."""
+        import json
         full_response = []
-        
+
         try:
             async for token in qwen_client.generate_response_stream(
                 query=query,
@@ -246,19 +335,47 @@ class MultimodalChatbot:
                 user_image_url=user_image_url
             ):
                 full_response.append(token)
-                yield token
+                # Yield token as JSON for consistent parsing
+                yield json.dumps({"type": "token", "content": token}) + "\n"
         except Exception as e:
-            print(f"Ã¢ÂÅ’ Stream error: {e}")
-            yield "\n[Error generating response]"
-        
-        # After streaming, add sources
+            print(f"❌ Stream error: {e}")
+            yield json.dumps({"type": "error", "content": "Error generating response"}) + "\n"
+
+        # After streaming, send metadata
         response_text = "".join(full_response)
-        sources_text = self._format_sources(retrieval_result.documents[:3])
-        
-        if sources_text:
-            yield f"\n\n{sources_text}"
-        
-        context.add_message("assistant", response_text)
+        if response_text:  # Only save if we got a response
+            context.add_message("assistant", response_text)
+
+        # Prepare sources and metadata with error handling
+        try:
+            source_images = self._format_source_images(retrieval_result.documents[:config.ux.max_sources_displayed])
+            sources = [
+                {
+                    "id": doc.id,
+                    "type": doc.type,
+                    "title": doc.source_display,
+                    "url": doc.url,
+                    "relevance_score": doc.score
+                }
+                for doc in retrieval_result.documents[:config.ux.max_sources_displayed]
+            ]
+        except Exception as e:
+            print(f"⚠️ Error formatting sources: {e}")
+            source_images = []
+            sources = []
+
+        latency_ms = (time.time() - start_time) * 1000
+
+        # Send metadata as final message - always send even if empty
+        metadata = {
+            "type": "metadata",
+            "sources": sources,
+            "source_images": source_images,
+            "confidence": retrieval_result.confidence if retrieval_result else 0.0,
+            "latency_ms": latency_ms,
+            "conversation_id": context.conversation_id
+        }
+        yield json.dumps(metadata) + "\n"
     
     async def _handle_escalation(
         self,
@@ -339,8 +456,7 @@ class MultimodalChatbot:
         """Build complete response with citations."""
         # Build source list
         sources = []
-        source_images = []
-        
+
         for doc in retrieval_result.documents[:config.ux.max_sources_displayed]:
             sources.append(ChatSource(
                 id=doc.id,
@@ -349,22 +465,9 @@ class MultimodalChatbot:
                 url=doc.url,
                 relevance_score=doc.score
             ))
-            
-            # Collect image sources for display with visual grounding data
-            if doc.type == "image" and doc.url and config.ux.show_source_images:
-                # Extract components for visual grounding (bounding boxes)
-                components = []
-                if doc.metadata:
-                    components = doc.metadata.get("components", [])
-                
-                source_images.append({
-                    "url": doc.url,
-                    "title": doc.source_display,
-                    "caption": doc.caption[:200] if doc.caption else "",
-                    "components": components,  # Visual grounding data
-                    "match_type": doc.match_type,
-                    "score": doc.score
-                })
+
+        # Collect image sources for display with visual grounding data
+        source_images = self._format_source_images(retrieval_result.documents[:config.ux.max_sources_displayed])
         
         # Don't append sources to message - they're shown in the sidebar
         # This avoids the duplicate/broken markdown link issue
@@ -380,18 +483,40 @@ class MultimodalChatbot:
             source_images=source_images
         )
     
+    def _format_source_images(self, documents: List[RetrievedDocumentV2]) -> List[Dict[str, Any]]:
+        """Format source images with visual grounding data for frontend display."""
+        source_images = []
+
+        for doc in documents:
+            if doc.type == "image" and doc.url and config.ux.show_source_images:
+                # Extract components for visual grounding (bounding boxes)
+                components = []
+                if doc.metadata:
+                    components = doc.metadata.get("components", [])
+
+                source_images.append({
+                    "url": doc.url,
+                    "title": doc.source_display,
+                    "caption": doc.caption[:200] if doc.caption else "",
+                    "components": components,  # Visual grounding data
+                    "match_type": doc.match_type,
+                    "score": doc.score
+                })
+
+        return source_images
+
     def _format_sources(self, documents: List[RetrievedDocumentV2]) -> str:
         """Format source citations for display."""
         if not documents:
             return ""
-        
+
         lines = ["\n\n**Sources:**"]
         for i, doc in enumerate(documents[:3]):
             if doc.type == "image":
                 lines.append(f"- [{doc.source_display}]({doc.url})" if doc.url else f"- {doc.source_display}")
             else:
                 lines.append(f"- {doc.source_display}")
-        
+
         return "\n".join(lines)
     
     def clear_conversation(self, conversation_id: str):

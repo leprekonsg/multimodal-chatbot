@@ -859,3 +859,21 @@ body {
     opacity: 0.7;
     pointer-events: none;
 }
+/* Streaming cursor animation */
+.streaming-cursor {
+    display: inline-block;
+    margin-left: 2px;
+    color: var(--accent-primary);
+    animation: blink 1s step-end infinite;
+    font-weight: 300;
+}
+
+.streaming-content {
+    display: inline;
+    margin: 0;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
