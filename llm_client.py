@@ -148,8 +148,9 @@ If this is a chart/diagram, describe the data patterns and trends."""
                 ]
             }
         
-        Note: Qwen3-VL outputs coordinates relative to image dimensions.
-        The bbox_2d format is [x1, y1, x2, y2] where coordinates are in pixels.
+        Note: Qwen3-VL outputs coordinates in NORMALIZED 0-1000 range (not pixels).
+        The bbox_2d format is [x1, y1, x2, y2] where each value is 0-1000.
+        Frontend must convert: abs_x = (x / 1000) * image_width
         """
         final_url = self._process_image_url(image_url)
         
@@ -189,16 +190,23 @@ IMPORTANT RULES:
 - Transcribe ALL text exactly as shown (error codes, part numbers, measurements)
 - Detect 3-10 most important/identifiable components with their bounding boxes
 - For diagrams/schematics, identify key labeled parts, arrows, and annotations
-- bbox_2d coordinates should be in pixel units relative to the image dimensions
+- bbox_2d coordinates should be in NORMALIZED 0-1000 range (Qwen3-VL default format)
 - Output ONLY valid JSON, no other text"""
 
         try:
+            # Higher resolution for better component detection
+            # Official recommendation: min_pixels=64*32*32, max_pixels=9800*32*32
             response = await self.client.chat.completions.create(
                 model=ModelTier.FLASH.value,
                 messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "image_url", "image_url": {"url": final_url}},
+                        {
+                            "type": "image_url", 
+                            "image_url": {"url": final_url},
+                            "min_pixels": 64 * 32 * 32,  # ~65K pixels minimum
+                            "max_pixels": 2560 * 32 * 32  # ~2.6M pixels maximum (balanced for speed)
+                        },
                         {"type": "text", "text": prompt}
                     ]
                 }],
@@ -346,8 +354,8 @@ IMPORTANT RULES:
                 "confidence": "high/medium/low"
             }
         
-        Note: Coordinates are in pixel units relative to image dimensions.
-        Frontend should scale to actual displayed image dimensions.
+        Note: Coordinates are in NORMALIZED 0-1000 range (Qwen3-VL default).
+        Frontend must convert: abs_x = (x / 1000) * displayed_image_width
         """
         final_url = self._process_image_url(image_url)
         
@@ -397,7 +405,7 @@ If you cannot find it, respond with JSON:
     "suggestions": ["alternative things to search for"]
 }}
 
-IMPORTANT: bbox_2d coordinates should be in pixel units.
+IMPORTANT: bbox_2d coordinates should be in normalized 0-1000 range.
 Respond ONLY with valid JSON, no other text."""
 
         try:
@@ -406,7 +414,12 @@ Respond ONLY with valid JSON, no other text."""
                 messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "image_url", "image_url": {"url": final_url}},
+                        {
+                            "type": "image_url", 
+                            "image_url": {"url": final_url},
+                            "min_pixels": 64 * 32 * 32,
+                            "max_pixels": 2560 * 32 * 32
+                        },
                         {"type": "text", "text": prompt}
                     ]
                 }],

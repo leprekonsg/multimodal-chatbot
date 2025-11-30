@@ -632,6 +632,7 @@
             flex-wrap: wrap;
             opacity: 0;
             transition: opacity 0.2s;
+            z-index: 10;
         }
         
         .source-card:hover .source-grounding {
@@ -646,6 +647,40 @@
             border-radius: var(--radius-sm);
             text-transform: uppercase;
             letter-spacing: 0.03em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .grounding-tag:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(212, 165, 116, 0.5);
+        }
+        
+        /* Bounding box overlays - drawn using Qwen3-VL 0-1000 normalized coords */
+        .bbox-overlay {
+            position: absolute;
+            border: 2px solid;
+            border-radius: 2px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            z-index: 5;
+        }
+        
+        .source-card:hover .bbox-overlay {
+            opacity: 0.9;
+        }
+        
+        .bbox-label {
+            position: absolute;
+            top: -18px;
+            left: 0;
+            font-size: 9px;
+            padding: 1px 4px;
+            color: var(--bg-deep);
+            border-radius: 2px;
+            white-space: nowrap;
+            font-weight: 500;
         }
         
         .source-content {
@@ -712,6 +747,101 @@
             height: 100%;
             background: var(--sage);
             transition: width 0.3s;
+        }
+        
+        /* Fullscreen image modal for visual grounding */
+        .image-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 1000;
+            padding: var(--space-xl);
+            overflow: auto;
+        }
+        
+        .image-modal.active {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .image-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            max-width: 1200px;
+            padding-bottom: var(--space-md);
+            margin-bottom: var(--space-md);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        
+        .image-modal-title {
+            font-family: var(--font-display);
+            font-size: 1.25rem;
+            color: var(--text-primary);
+        }
+        
+        .image-modal-close {
+            width: 40px;
+            height: 40px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 50%;
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        
+        .image-modal-close:hover {
+            background: var(--accent-primary);
+            color: var(--bg-deep);
+        }
+        
+        .image-modal-container {
+            position: relative;
+            max-width: 100%;
+            max-height: calc(100vh - 150px);
+        }
+        
+        .image-modal-container img {
+            max-width: 100%;
+            max-height: calc(100vh - 150px);
+            object-fit: contain;
+        }
+        
+        .image-modal-container .bbox-overlay {
+            opacity: 1;
+        }
+        
+        .image-modal-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-sm);
+            margin-top: var(--space-lg);
+            padding: var(--space-md);
+            background: var(--bg-elevated);
+            border-radius: var(--radius-lg);
+            max-width: 1200px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: var(--space-xs);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
         }
         
         /* Markdown-rendered content styles */
@@ -844,7 +974,7 @@
             <div style="display: flex; align-items: center; gap: 1rem;">
                 <a href="/ingest" style="color: var(--text-secondary); text-decoration: none; padding: 0.5rem 1rem; border-radius: 8px; transition: all 0.2s; font-size: 13px;" onmouseover="this.style.background='var(--bg-elevated)'; this.style.color='var(--accent-primary)'" onmouseout="this.style.background='transparent'; this.style.color='var(--text-secondary)'">+ Add Documents</a>
                 <div class="header-meta">
-                    <span id="connectionStatus">â— Connected</span>
+                    <span id="connectionStatus">● Connected</span>
                 </div>
             </div>
         </header>
@@ -932,6 +1062,23 @@
                 <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
             </svg>
         </button>
+
+        <!-- Image Modal -->
+        <div class="image-modal" id="imageModal">
+            <div class="image-modal-header">
+                <div class="image-modal-title" id="modalTitle"></div>
+                <button class="image-modal-close" onclick="closeImageModal()">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="image-modal-container" id="modalContainer">
+                <img id="modalImage" src="" alt="">
+                <!-- Overlays will be injected here -->
+            </div>
+            <div class="image-modal-legend" id="modalLegend"></div>
+        </div>
     </div>
     
     <script>
@@ -952,6 +1099,13 @@
         const imagePreview = document.getElementById('imagePreview');
         const previewImage = document.getElementById('previewImage');
         const previewName = document.getElementById('previewName');
+        
+        // Modal Elements
+        const imageModal = document.getElementById('imageModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalImage = document.getElementById('modalImage');
+        const modalContainer = document.getElementById('modalContainer');
+        const modalLegend = document.getElementById('modalLegend');
         
         // Auto-resize textarea
         messageInput.addEventListener('input', function() {
@@ -1001,6 +1155,75 @@
             const panel = document.getElementById('sourcesPanel');
             panel.classList.toggle('mobile-visible');
         }
+        
+        // Modal Functions
+        function openImageModal(source) {
+            modalTitle.textContent = source.title || 'Image View';
+            modalImage.src = source.url;
+            
+            // Clear previous overlays (keep the image)
+            const existingOverlays = modalContainer.querySelectorAll('.bbox-overlay');
+            existingOverlays.forEach(el => el.remove());
+
+            // Render Bounding Boxes
+            if (source.components && source.components.length > 0) {
+                source.components.forEach((c, i) => {
+                    if (c.bbox_2d && c.bbox_2d.length === 4) {
+                        const [x1, y1, x2, y2] = c.bbox_2d;
+                        const colors = ['#D4A574', '#6B8B6B', '#C17B7B', '#7B9BC1', '#B87BC1'];
+                        const color = colors[i % colors.length];
+                        
+                        const el = document.createElement('div');
+                        el.className = 'bbox-overlay';
+                        // Convert 0-1000 range to percentage
+                        el.style.left = (x1 / 10) + '%';
+                        el.style.top = (y1 / 10) + '%';
+                        el.style.width = ((x2 - x1) / 10) + '%';
+                        el.style.height = ((y2 - y1) / 10) + '%';
+                        el.style.borderColor = color;
+                        el.style.opacity = '1'; // Always visible in modal
+                        
+                        el.innerHTML = `<span class="bbox-label" style="background:${color}">${c.label || ''}</span>`;
+                        modalContainer.appendChild(el);
+                    }
+                });
+            }
+            
+            // Render Legend
+            modalLegend.innerHTML = '';
+            if (source.components && source.components.length > 0) {
+                source.components.forEach((c, i) => {
+                    const colors = ['#D4A574', '#6B8B6B', '#C17B7B', '#7B9BC1', '#B87BC1'];
+                    const color = colors[i % colors.length];
+                    
+                    const item = document.createElement('div');
+                    item.className = 'legend-item';
+                    item.innerHTML = `
+                        <div class="legend-color" style="background: ${color}"></div>
+                        <span>${c.label || c.type}</span>
+                    `;
+                    modalLegend.appendChild(item);
+                });
+            }
+
+            imageModal.classList.add('active');
+            imageModal.style.display = 'flex';
+        }
+
+        function closeImageModal() {
+            imageModal.style.display = 'none';
+            imageModal.classList.remove('active');
+        }
+        
+        // Close on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeImageModal();
+        });
+        
+        // Close on click outside
+        imageModal.addEventListener('click', (e) => {
+            if (e.target === imageModal) closeImageModal();
+        });
         
         // Simple markdown parser for basic formatting
         function parseMarkdown(text) {
@@ -1203,21 +1426,43 @@
                 card.className = 'source-card';
                 card.style.animationDelay = `${index * 0.1}s`;
                 
-                // Build image HTML with visual grounding overlay
+                // Build image HTML with visual grounding overlay and bounding boxes
                 let imageHtml = '';
                 if (source.url) {
-                    // Build grounding tags from components
+                    // Build grounding tags and bounding box overlays from components
                     let groundingHtml = '';
+                    let bboxOverlays = '';
                     if (source.components && source.components.length > 0) {
-                        const tags = source.components.slice(0, 4).map(c => 
-                            `<span class="grounding-tag">${c.name || c.type || 'Component'}</span>`
+                        const tags = source.components.slice(0, 4).map((c, i) => 
+                            `<span class="grounding-tag" data-bbox-index="${i}">${c.label || c.type || 'Component'}</span>`
                         ).join('');
                         groundingHtml = `<div class="source-grounding">${tags}</div>`;
+                        
+                        // Create bounding box overlays (using 0-1000 normalized coords)
+                        // These will be drawn via CSS positioning
+                        bboxOverlays = source.components.map((c, i) => {
+                            if (c.bbox_2d && c.bbox_2d.length === 4) {
+                                const [x1, y1, x2, y2] = c.bbox_2d;
+                                // Convert 0-1000 to percentage for CSS positioning
+                                const left = (x1 / 10);
+                                const top = (y1 / 10);
+                                const width = ((x2 - x1) / 10);
+                                const height = ((y2 - y1) / 10);
+                                const colors = ['#D4A574', '#6B8B6B', '#C17B7B', '#7B9BC1', '#B87BC1'];
+                                const color = colors[i % colors.length];
+                                return `<div class="bbox-overlay" data-bbox-index="${i}" 
+                                    style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;border-color:${color};">
+                                    <span class="bbox-label" style="background:${color}">${c.label || ''}</span>
+                                </div>`;
+                            }
+                            return '';
+                        }).join('');
                     }
                     
                     imageHtml = `
-                        <div class="source-image-container">
+                        <div class="source-image-container" data-source-index="${index}">
                             <img src="${source.url}" alt="${source.title}" class="source-image">
+                            ${bboxOverlays}
                             ${groundingHtml}
                         </div>
                     `;
@@ -1266,7 +1511,9 @@
                 
                 if (source.url) {
                     card.style.cursor = 'pointer';
-                    card.onclick = () => window.open(source.url, '_blank');
+                    // Pass the full source object to the modal function
+                    // We need to attach the event listener properly since we're creating elements dynamically
+                    card.addEventListener('click', () => openImageModal(source));
                 }
                 
                 sourcesList.appendChild(card);
@@ -1348,6 +1595,40 @@
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             messageInput.focus();
+            
+            // Add event delegation for grounding tag hover interactions
+            // When hovering a grounding tag, highlight the corresponding bounding box
+            document.getElementById('sourcesList').addEventListener('mouseover', (e) => {
+                const tag = e.target.closest('.grounding-tag');
+                if (tag) {
+                    const bboxIndex = tag.dataset.bboxIndex;
+                    const container = tag.closest('.source-image-container');
+                    if (container && bboxIndex !== undefined) {
+                        const bbox = container.querySelector(`.bbox-overlay[data-bbox-index="${bboxIndex}"]`);
+                        if (bbox) {
+                            bbox.style.opacity = '1';
+                            bbox.style.borderWidth = '3px';
+                            bbox.style.boxShadow = '0 0 10px rgba(212, 165, 116, 0.5)';
+                        }
+                    }
+                }
+            });
+            
+            document.getElementById('sourcesList').addEventListener('mouseout', (e) => {
+                const tag = e.target.closest('.grounding-tag');
+                if (tag) {
+                    const bboxIndex = tag.dataset.bboxIndex;
+                    const container = tag.closest('.source-image-container');
+                    if (container && bboxIndex !== undefined) {
+                        const bbox = container.querySelector(`.bbox-overlay[data-bbox-index="${bboxIndex}"]`);
+                        if (bbox) {
+                            bbox.style.opacity = '';
+                            bbox.style.borderWidth = '';
+                            bbox.style.boxShadow = '';
+                        }
+                    }
+                }
+            });
         });
     </script>
 </body>
