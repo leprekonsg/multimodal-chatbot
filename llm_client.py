@@ -1,6 +1,7 @@
 """
 Qwen3-VL Client
 Tiered model selection for cost/latency optimization.
+Updated with proper bbox_2d format and ASCII logging.
 """
 import asyncio
 import base64
@@ -66,10 +67,10 @@ class QwenClient:
                     b64 = base64.b64encode(data).decode("utf-8")
                     return f"data:{mime};base64,{b64}"
                 else:
-                    print(f"Ã¢ÂÅ’ File not found at: {local_path}")
+                    print(f"[!] File not found at: {local_path}")
                     return None
             except Exception as e:
-                print(f"Ã¢Å¡Â Ã¯Â¸Â Failed to convert local image {url}: {e}")
+                print(f"[!] Failed to convert local image {url}: {e}")
                 return None
                 
         return url
@@ -116,7 +117,7 @@ If this is a chart/diagram, describe the data patterns and trends."""
             return response.choices[0].message.content
             
         except Exception as e:
-            print(f"Ã¢ÂÅ’ Qwen Caption Error: {e}")
+            print(f"[X] Qwen Caption Error: {e}")
             raise
 
     async def caption_image_structured(
@@ -128,6 +129,8 @@ If this is a chart/diagram, describe the data patterns and trends."""
         """
         Generate structured caption with component bounding boxes for technical manuals.
         
+        Uses Qwen3-VL's native bbox_2d format for accurate object detection.
+        
         This enables:
         1. Better search indexing (contextual retrieval)
         2. Visual grounding at query time (technicians can locate components)
@@ -138,12 +141,15 @@ If this is a chart/diagram, describe the data patterns and trends."""
                 "description": "Overall page description",
                 "transcribed_text": "All visible text",
                 "context_prefix": "Contextual retrieval prefix",
+                "document_type": "diagram|procedure|table|schematic|other",
+                "key_topics": ["topic1", "topic2"],
                 "components": [
-                    {"name": "component", "bbox": [[x1,y1,x2,y2]], "description": "..."}
+                    {"label": "component name", "bbox_2d": [x1, y1, x2, y2], "type": "valve|button|..."}
                 ]
             }
         
-        Note: Qwen3-VL outputs coordinates in [0-1000] normalized format.
+        Note: Qwen3-VL outputs coordinates relative to image dimensions.
+        The bbox_2d format is [x1, y1, x2, y2] where coordinates are in pixels.
         """
         final_url = self._process_image_url(image_url)
         
@@ -157,30 +163,34 @@ If this is a chart/diagram, describe the data patterns and trends."""
             if page_number:
                 source_context += f", Page {page_number}"
         
+        # Updated prompt using Qwen3-VL's native bbox_2d format
         prompt = f"""Analyze this technical manual page. {source_context}
 
-Your task is to extract structured information for a search system that helps technicians find information.
+You are analyzing a technical document to help technicians find information.
 
-Provide your response in this exact JSON format:
+TASK 1 - Detect and locate all important components/elements in the image.
+For each component, output its bounding box in this format:
+{{"bbox_2d": [x1, y1, x2, y2], "label": "component name"}}
+
+TASK 2 - Provide a structured analysis.
+
+Output your response as a JSON object with this exact format:
 {{
     "description": "A detailed description of what this page shows (2-3 sentences)",
     "document_type": "diagram|procedure|table|schematic|specification|other",
-    "transcribed_text": "ALL visible text, numbers, labels, part numbers transcribed exactly",
-    "key_topics": ["topic1", "topic2"],
+    "transcribed_text": "ALL visible text transcribed exactly as shown",
+    "key_topics": ["topic1", "topic2", "topic3"],
     "components": [
-        {{
-            "name": "component or part name",
-            "bbox": [[x1, y1, x2, y2]],
-            "type": "button|valve|connector|label|warning|other"
-        }}
+        {{"bbox_2d": [x1, y1, x2, y2], "label": "component or part name", "type": "button|valve|connector|label|warning|diagram|other"}}
     ]
 }}
 
-Important:
+IMPORTANT RULES:
 - Transcribe ALL text exactly as shown (error codes, part numbers, measurements)
-- For components, provide bounding box coordinates in [0-1000] normalized format
-- List 3-8 most important/identifiable components
-- For diagrams/schematics, identify key labeled parts"""
+- Detect 3-10 most important/identifiable components with their bounding boxes
+- For diagrams/schematics, identify key labeled parts, arrows, and annotations
+- bbox_2d coordinates should be in pixel units relative to the image dimensions
+- Output ONLY valid JSON, no other text"""
 
         try:
             response = await self.client.chat.completions.create(
@@ -192,7 +202,7 @@ Important:
                         {"type": "text", "text": prompt}
                     ]
                 }],
-                max_tokens=config.qwen.caption_max_tokens + 200  # Extra for JSON structure
+                max_tokens=config.qwen.caption_max_tokens + 500  # Extra for JSON + bboxes
             )
             
             if response.usage:
@@ -206,34 +216,60 @@ Important:
             # Parse JSON response
             try:
                 # Handle potential markdown code blocks
-                if "```json" in raw_response:
-                    raw_response = raw_response.split("```json")[1].split("```")[0]
-                elif "```" in raw_response:
-                    raw_response = raw_response.split("```")[1].split("```")[0]
+                json_text = raw_response
+                if "```json" in json_text:
+                    json_text = json_text.split("```json")[1].split("```")[0]
+                elif "```" in json_text:
+                    json_text = json_text.split("```")[1].split("```")[0]
                 
-                structured = json.loads(raw_response.strip())
+                structured = json.loads(json_text.strip())
+                
+                # Normalize component format (ensure consistent key names)
+                components = structured.get("components", [])
+                normalized_components = []
+                for comp in components:
+                    normalized = {
+                        "label": comp.get("label", comp.get("name", "Unknown")),
+                        "bbox_2d": comp.get("bbox_2d", comp.get("bbox", [])),
+                        "type": comp.get("type", "other")
+                    }
+                    # Only include if we have valid bbox
+                    if normalized["bbox_2d"] and len(normalized["bbox_2d"]) == 4:
+                        normalized_components.append(normalized)
+                
+                structured["components"] = normalized_components
                 
                 # Generate contextual retrieval prefix
-                # This is prepended to captions before embedding (67% error reduction)
                 context_prefix = self._generate_context_prefix(
                     structured, filename, page_number
                 )
                 structured["context_prefix"] = context_prefix
                 
+                # Log component detection results
+                num_components = len(normalized_components)
+                if num_components > 0:
+                    print(f"[+] Structured caption: {num_components} components detected with bounding boxes")
+                    for comp in normalized_components[:3]:
+                        print(f"    - {comp['label']}: {comp['bbox_2d']}")
+                else:
+                    print("[!] Structured caption: No components with valid bounding boxes detected")
+                
                 return structured
                 
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
                 # Fallback: return raw caption if JSON parsing fails
-                print(f"Warning: JSON parsing failed, using plain caption")
+                print(f"[!] JSON parsing failed ({e}), using plain caption")
                 return {
-                    "description": raw_response,
+                    "description": raw_response[:500],
                     "transcribed_text": "",
                     "context_prefix": f"[{filename or 'Document'}{f', Page {page_number}' if page_number else ''}] ",
+                    "document_type": "other",
+                    "key_topics": [],
                     "components": []
                 }
             
         except Exception as e:
-            print(f"Qwen Structured Caption Error: {e}")
+            print(f"[X] Qwen Structured Caption Error: {e}")
             raise
 
     def _generate_context_prefix(
@@ -290,6 +326,8 @@ Important:
         """
         Locate specific elements in an image based on user query.
         
+        Uses Qwen3-VL's native visual grounding with bbox_2d format.
+        
         This is the query-time visual grounding capability that enables
         technicians to ask "where is the reset button?" and get precise
         bounding box coordinates on the relevant page.
@@ -303,13 +341,13 @@ Important:
             {
                 "found": True/False,
                 "element": "name of located element",
-                "bbox": [[x1, y1, x2, y2]],
+                "bbox_2d": [x1, y1, x2, y2],
                 "description": "explanation of what was found",
                 "confidence": "high/medium/low"
             }
         
-        Note: Coordinates are normalized to [0-1000] range.
-        Frontend should scale to actual image dimensions.
+        Note: Coordinates are in pixel units relative to image dimensions.
+        Frontend should scale to actual displayed image dimensions.
         """
         final_url = self._process_image_url(image_url)
         
@@ -323,14 +361,19 @@ Important:
         if existing_components:
             # Simple keyword matching against pre-extracted components
             query_lower = query.lower()
+            query_words = set(query_lower.split())
+            
             for comp in existing_components:
-                comp_name = comp.get("name", "").lower()
-                if any(word in comp_name for word in query_lower.split()):
+                comp_label = comp.get("label", comp.get("name", "")).lower()
+                comp_words = set(comp_label.split())
+                
+                # Check for word overlap
+                if query_words & comp_words:
                     return {
                         "found": True,
-                        "element": comp.get("name"),
-                        "bbox": comp.get("bbox"),
-                        "description": f"Found '{comp.get('name')}' from pre-indexed components",
+                        "element": comp.get("label", comp.get("name")),
+                        "bbox_2d": comp.get("bbox_2d", comp.get("bbox")),
+                        "description": f"Found '{comp.get('label', comp.get('name'))}' from pre-indexed components",
                         "confidence": "high",
                         "source": "indexed"
                     }
@@ -338,24 +381,24 @@ Important:
         # Fall back to real-time visual grounding via VLM
         prompt = f"""Locate in this image: "{query}"
 
-If you can find it, respond with:
+If you can find it, respond with JSON:
 {{
     "found": true,
     "element": "exact name of what you found",
-    "bbox": [[x1, y1, x2, y2]],
+    "bbox_2d": [x1, y1, x2, y2],
     "description": "brief description of the element and its location",
     "confidence": "high" or "medium" or "low"
 }}
 
-If you cannot find it, respond with:
+If you cannot find it, respond with JSON:
 {{
     "found": false,
     "reason": "why it couldn't be found",
     "suggestions": ["alternative things to search for"]
 }}
 
-Use coordinates in [0-1000] normalized range where (0,0) is top-left and (1000,1000) is bottom-right.
-Respond ONLY with valid JSON."""
+IMPORTANT: bbox_2d coordinates should be in pixel units.
+Respond ONLY with valid JSON, no other text."""
 
         try:
             response = await self.client.chat.completions.create(
@@ -380,13 +423,14 @@ Respond ONLY with valid JSON."""
             
             try:
                 # Clean and parse JSON
-                if "```" in raw_response:
-                    raw_response = raw_response.split("```")[1]
-                    if raw_response.startswith("json"):
-                        raw_response = raw_response[4:]
-                    raw_response = raw_response.split("```")[0]
+                json_text = raw_response
+                if "```" in json_text:
+                    json_text = json_text.split("```")[1]
+                    if json_text.startswith("json"):
+                        json_text = json_text[4:]
+                    json_text = json_text.split("```")[0]
                 
-                result = json.loads(raw_response.strip())
+                result = json.loads(json_text.strip())
                 result["source"] = "realtime_grounding"
                 return result
                 
@@ -398,7 +442,7 @@ Respond ONLY with valid JSON."""
                 }
             
         except Exception as e:
-            print(f"Visual Grounding Error: {e}")
+            print(f"[X] Visual Grounding Error: {e}")
             return {
                 "found": False,
                 "error": str(e)
@@ -460,12 +504,8 @@ Instructions:
             enable_thinking = self._should_use_thinking(query)
         
         # Qwen3-VL specific thinking parameters
-        # Note: If API returns 400, set enable_thinking_default to False in config
         extra_body = {}
         if enable_thinking:
-            # Common flag for Alibaba Cloud models to enable reasoning
-            # If this specific key fails, it might be 'reasoning_mode': 'thinking'
-            # But usually for Qwen3-VL-Plus, it's implicit or via 'enable_thinking'
             extra_body["enable_thinking"] = True 
         
         try:
@@ -497,7 +537,7 @@ Instructions:
             )
             
         except Exception as e:
-            print(f"Ã¢ÂÅ’ Qwen Generation Error: {e}")
+            print(f"[X] Qwen Generation Error: {e}")
             raise
     
     async def generate_response_stream(
@@ -520,7 +560,7 @@ Instructions:
                 })
         
         if image_urls:
-            for url in image_urls[:5]:  # Support multi-image in streaming too
+            for url in image_urls[:5]:
                 final_url = self._process_image_url(url)
                 if final_url:
                     content.append({
@@ -567,7 +607,7 @@ Answer based on the context. If information is missing, clearly state that."""
                     yield chunk.choices[0].delta.content
                     
         except Exception as e:
-            print(f"Ã¢ÂÅ’ Qwen Stream Error: {e}")
+            print(f"[X] Qwen Stream Error: {e}")
             raise
     
     async def analyze_sentiment(self, text: str) -> float:

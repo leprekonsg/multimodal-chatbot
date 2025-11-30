@@ -7,6 +7,7 @@ Key Improvements:
 3. Calibrated confidence scores
 4. Query understanding for optimal strategy selection
 5. Re-ranking stage for final results
+6. ASCII logging (no emoji encoding issues)
 """
 import asyncio
 from typing import List, Optional, Tuple, Dict, Any
@@ -256,10 +257,8 @@ class ConfidenceCalculator:
             gap_bonus = 0.05
         
         # 3. Intent alignment bonus
-        # Check if the score from the intent-appropriate strategy is strong
         intent_bonus = 0.0
         if query_intent == QueryIntent.VISUAL_SEARCH:
-            # For visual search, visual_score or combined should be strong
             visual_relevant = max(
                 top_scores.get("visual_score", 0),
                 top_scores.get("combined_score", 0)
@@ -267,7 +266,6 @@ class ConfidenceCalculator:
             if visual_relevant > 0.7:
                 intent_bonus = 0.05
         elif query_intent == QueryIntent.TEXTUAL_SEARCH:
-            # For textual search, textual_score OR combined_text_score should be strong
             text_relevant = max(
                 top_scores.get("textual_score", 0),
                 top_scores.get("combined_text_score", 0),
@@ -276,7 +274,6 @@ class ConfidenceCalculator:
             if text_relevant > 0.7:
                 intent_bonus = 0.05
         elif query_intent == QueryIntent.MULTIMODAL:
-            # For multimodal, combined score should be strong
             if top_scores.get("combined_score", 0) > 0.7:
                 intent_bonus = 0.05
         
@@ -296,12 +293,12 @@ class ConfidenceCalculator:
         if top_score < cls.COSINE_POOR:
             confidence *= 0.7  # Less aggressive penalty
         
-        # Diagnostic logging
+        # Diagnostic logging (ASCII only)
         if verbose:
-            print(f"ðŸ“Š [Confidence] Top scores: {top_scores}")
-            print(f"ðŸ“Š [Confidence] Best score: {top_score:.4f} from {top_score_source}")
-            print(f"ðŸ“Š [Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f}")
-            print(f"ðŸ“Š [Confidence] Final: {confidence:.2%}")
+            print(f"[Confidence] Top scores: {top_scores}")
+            print(f"[Confidence] Best score: {top_score:.4f} from {top_score_source}")
+            print(f"[Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f}")
+            print(f"[Confidence] Final: {confidence:.2%}")
         
         return confidence
 
@@ -363,9 +360,9 @@ class HybridRetrieverV2:
         
         # Classify query intent
         query_intent = self.classifier.classify(query_text, query_image is not None)
-        print(f"Ã°Å¸â€Â [Retrieval] Query intent: {query_intent.value}")
-        print(f"Ã°Å¸â€Â [Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
-        print(f"Ã°Å¸â€Â [Retrieval] Has image: {query_image is not None}")
+        print(f"[Retrieval] Query intent: {query_intent.value}")
+        print(f"[Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
+        print(f"[Retrieval] Has image: {query_image is not None}")
         
         # Build filter
         search_filter = None
@@ -378,13 +375,13 @@ class HybridRetrieverV2:
             )
         
         # Generate query embeddings
-        print(f"Ã¢ÂÂ³ [Retrieval] Generating query embeddings...")
+        print(f"[Retrieval] Generating query embeddings...")
         query_embeddings = await voyage_embedder_v2.encode_query_adaptive(
             text=query_text,
             image=query_image,
             query_intent=query_intent.value
         )
-        print(f"Ã¢Å“â€¦ [Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
+        print(f"[Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
         
         # Strategy 1: Exact match via perceptual hash (if image provided)
         exact_results = []
@@ -447,8 +444,6 @@ class HybridRetrieverV2:
             strategies_used.append("sparse")
             
             # CRITICAL FIX: Also search combined_dense for text queries!
-            # The combined vector contains visual semantics that may match text queries
-            # about visual concepts (helicopters, charts, diagrams, etc.)
             search_tasks.append(
                 self._vector_search(
                     vector=query_embeddings["text_query"],
@@ -457,7 +452,7 @@ class HybridRetrieverV2:
                     filter=search_filter
                 )
             )
-            strategies_used.append("combined_text")  # Distinct from multimodal combined search
+            strategies_used.append("combined_text")
         
         # Combined search (if multimodal query - uses combined embedding)
         if "combined_query" in query_embeddings:
@@ -489,22 +484,21 @@ class HybridRetrieverV2:
         fused = self._weighted_rrf(results_dict, query_intent)
         
         # Log search results
-        print(f"📋 [Retrieval] Strategies used: {strategies_used}")
-        print(f"📋 [Retrieval] Results per strategy: {{{', '.join(f'{k}: {len(v)}' for k, v in results_dict.items())}}}")
+        print(f"[Retrieval] Strategies used: {strategies_used}")
+        results_summary = ", ".join(f"{k}: {len(v)}" for k, v in results_dict.items())
+        print(f"[Retrieval] Results per strategy: {{{results_summary}}}")
         
         # === RERANKING STAGE (20-48% accuracy improvement) ===
-        # Research: Cross-encoder reranking is the highest-impact optimization
-        # We rerank top 50 candidates to get precise top_k results
         if query_text and len(fused) > 1:
             try:
-                print(f"🔄 [Retrieval] Reranking {min(len(fused), config.rerank.candidates_to_rerank)} candidates...")
+                print(f"[Retrieval] Reranking {min(len(fused), config.rerank.candidates_to_rerank)} candidates...")
                 fused = await reranker.rerank(
                     query=query_text,
                     documents=fused,
                     top_k=top_k
                 )
             except Exception as e:
-                print(f"⚠️ [Retrieval] Reranking failed, using RRF order: {e}")
+                print(f"[!] Reranking failed, using RRF order: {e}")
         
         top_results = fused[:top_k]
         
@@ -535,14 +529,15 @@ class HybridRetrieverV2:
         
         retrieval_ms = (time.time() - start_time) * 1000
         
-        # Log results summary
+        # Log results summary (ASCII only)
         if documents:
             top_doc = documents[0]
-            print(f"Ã°Å¸Å½Â¯ [Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
-            print(f"Ã°Å¸â€œâ€ž [Retrieval] Caption: {(top_doc.caption or 'None')[:150]}...")
+            print(f"[Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
+            caption_preview = (top_doc.caption or 'None')[:150]
+            print(f"[Retrieval] Caption: {caption_preview}...")
         else:
-            print(f"Ã¢Å¡Â Ã¯Â¸Â [Retrieval] No documents found!")
-        print(f"Ã°Å¸â€œÅ  [Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
+            print(f"[!] No documents found!")
+        print(f"[Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
         
         return RetrievalResultV2(
             documents=documents,
@@ -567,11 +562,7 @@ class HybridRetrieverV2:
         Returns: List of (doc_id, score, hamming_distance, payload)
         """
         try:
-            # First, get all documents with fingerprints
-            # In production, you'd use a specialized hash index
-            # For now, we scroll and compute distances
-            
-            # Get candidates with similar phash prefix (first 16 bits)
+            # Get candidates with fingerprints
             prefix = query_fingerprint.phash[:16]
             
             results = await self.client.scroll(
@@ -584,7 +575,7 @@ class HybridRetrieverV2:
                         )
                     ]
                 ),
-                limit=1000,  # Limit candidates
+                limit=1000,
                 with_payload=True
             )
             
@@ -597,7 +588,6 @@ class HybridRetrieverV2:
                     
                     # Only include near-matches (distance < 20)
                     if distance < 20:
-                        # Convert hamming distance to similarity score
                         similarity = 1.0 - (distance / 64.0)
                         matches.append((
                             str(point.id),
@@ -611,7 +601,7 @@ class HybridRetrieverV2:
             return matches[:limit]
             
         except Exception as e:
-            print(f"Exact hash search error: {e}")
+            print(f"[!] Exact hash search error: {e}")
             return []
     
     async def _vector_search(
@@ -635,7 +625,7 @@ class HybridRetrieverV2:
             return [(str(r.id), r.score, r.payload) for r in response.points]
             
         except Exception as e:
-            print(f"Vector search error ({vector_name}): {e}")
+            print(f"[!] Vector search error ({vector_name}): {e}")
             return []
     
     async def _sparse_search(
@@ -667,7 +657,7 @@ class HybridRetrieverV2:
             return [(str(r.id), r.score, r.payload) for r in response.points]
             
         except Exception as e:
-            print(f"Sparse search error: {e}")
+            print(f"[!] Sparse search error: {e}")
             return []
     
     def _weighted_rrf(
@@ -679,11 +669,7 @@ class HybridRetrieverV2:
         """
         Weighted Reciprocal Rank Fusion.
         
-        Weights strategies based on query intent:
-        - VISUAL_SEARCH: boost visual, combined
-        - TEXTUAL_SEARCH: boost textual, sparse
-        - EXACT_MATCH: strong boost for exact
-        - MULTIMODAL: balanced
+        Weights strategies based on query intent.
         """
         # Define strategy weights based on intent
         weights = {
@@ -789,7 +775,6 @@ class HybridRetrieverV2:
         hamming = match_info.get("hamming_distance", 64)
         
         # Extract all cosine-based strategy scores
-        # Note: sparse_score is BM25 weight, not cosine similarity - exclude from cosine comparisons
         visual_score = match_info.get("visual_score", 0.0)
         textual_score = match_info.get("textual_score", 0.0)
         combined_text_score = match_info.get("combined_text_score", 0.0)
@@ -803,7 +788,6 @@ class HybridRetrieverV2:
         elif textual_score > 0.7 and textual_score >= max(visual_score, combined_text_score, combined_score):
             match_type = "textual"
         elif combined_text_score > 0.55 or combined_score > 0.55:
-            # Combined strategies indicate semantic match
             match_type = "semantic"
         elif max(visual_score, textual_score, combined_text_score, combined_score) > 0:
             match_type = "semantic"
@@ -811,7 +795,6 @@ class HybridRetrieverV2:
             match_type = "semantic"
         
         # Include ALL strategy scores in metadata for confidence calculation
-        # This enables proper gap bonus calculation for non-top documents
         extra_metadata = {
             k: v for k, v in payload.items()
             if k not in ["type", "url", "caption", "text", "title", "fingerprint"]
