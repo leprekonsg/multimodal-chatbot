@@ -1,159 +1,120 @@
-# Multimodal RAG Chatbot
+# Multimodal RAG Chatbot (v2)
 
-A production-ready chatbot with **Voyage Multimodal-3 embeddings** for superior document understanding, hybrid retrieval, and intelligent human escalation.
+A production-grade RAG system using **Voyage Multimodal-3** for SOTA embeddings and **Qwen3-VL** for vision-language reasoning. Designed for high accuracy with charts, diagrams, and document screenshots without local GPU requirements.
 
-## ✨ Why Voyage Multimodal-3?
+## ⚡ Key Features
 
-| Capability | CLIP-based Models | Voyage Multimodal-3 |
-|------------|-------------------|---------------------|
-| Tables/Charts | ~60% accuracy | ~85% accuracy (+40%) |
-| Context Window | 77 tokens | 32,000 tokens |
-| Cross-modal Bias | Present | Eliminated |
-| Document Screenshots | Poor | Native support |
-| Interleaved Text+Image | No | Yes |
-
-Voyage's unified backbone processes all modalities together, eliminating the need for complex document parsing pipelines.
+*   **Multimodal Embeddings:** Uses Voyage Multimodal-3 (1024-dim) for unified text-image vector space.
+*   **Multi-Vector Storage:** Stores 3 vectors per document (Visual-only, Text-only, Combined) + Sparse (BM25) for robust retrieval.
+*   **Hybrid Search:** Reciprocal Rank Fusion (RRF) combines dense, sparse, and perceptual hash results.
+*   **Zero-GPU Inference:** Fully API-based architecture (Voyage AI + Alibaba Cloud), runnable on standard CPUs.
+*   **Intelligent Escalation:** Detects low confidence, negative sentiment, or explicit requests to trigger human handoff.
+*   **Streaming & Async:** Full async pipeline with Server-Sent Events (SSE) for chat streaming.
 
 ## 🏗️ Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              USER INPUT                                       │
-│                     (Text Query and/or Image Upload)                          │
-└─────────────────────────────────┬────────────────────────────────────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-    ┌───────────────────────────┐   ┌───────────────────────────┐
-    │     VOYAGE DENSE SEARCH   │   │     SPARSE SEARCH         │
-    │   (Multimodal-3 API)      │   │   (BM25 on Captions)      │
-    │                           │   │                           │
-    │  1024-dim embeddings      │   │  Keyword matching         │
-    │  input_type="query"       │   │  for fallback             │
-    └─────────────┬─────────────┘   └─────────────┬─────────────┘
-                  │                               │
-                  └───────────────┬───────────────┘
-                                  ▼
-                  ┌───────────────────────────────┐
-                  │   RECIPROCAL RANK FUSION      │
-                  │   score(d) = Σ 1/(k + rank)   │
-                  └───────────────┬───────────────┘
-                                  │
-                                  ▼
-                  ┌───────────────────────────────┐
-                  │       QWEN3-VL-PLUS           │
-                  │   (RAG Response Generation)   │
-                  └───────────────┬───────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                                       ▼
-    ┌─────────────────────────┐         ┌─────────────────────────┐
-    │   RESPOND TO USER       │         │   HUMAN HANDOFF         │
-    │   + Source Citations    │         │   (Webhook/Slack)       │
-    └─────────────────────────┘         └─────────────────────────┘
+```mermaid
+graph TD
+    User[User Input] --> Router{Type?}
+    Router -->|Image| Hash[Perceptual Hash]
+    Router -->|Text/Image| Embed[Voyage Multimodal-3]
+    
+    subgraph Retrieval [Hybrid Retrieval]
+        Hash -->|Exact Match| Qdrant
+        Embed -->|Dense Search| Qdrant
+        BM25[Sparse Encoder] -->|Keyword Search| Qdrant
+    end
+    
+    Qdrant --> RRF[Reciprocal Rank Fusion]
+    RRF --> Context[Context Window]
+    
+    Context --> LLM[Qwen3-VL-Plus]
+    LLM --> Response
+    
+    LLM -.->|Low Confidence| Escalation[Handoff Protocol]
 ```
 
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
+*   Python 3.10+
+*   Docker (for Qdrant)
+*   API Keys: Voyage AI, Alibaba Cloud (DashScope)
+
+### 2. Installation
 
 ```bash
-# Start Qdrant
-docker run -p 6333:6333 qdrant/qdrant
-
-# Clone and setup
-git clone <repo>
+# Clone and setup env
+git clone <repo_url>
 cd multimodal-rag-chatbot
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install lightweight dependencies (No Torch/Transformers required)
 pip install -r requirements.txt
 ```
 
-### 2. Configure
+### 3. Configuration
+Create a `.env` file:
 
-```bash
-cp .env.example .env
-# Edit .env with your API keys:
-# - VOYAGE_API_KEY (required) - get from voyageai.com
-# - DASHSCOPE_API_KEY (required) - get from Alibaba Cloud
+```ini
+# Required
+VOYAGE_API_KEY=voyage-key-here
+DASHSCOPE_API_KEY=sk-qwen-key-here
+
+# Optional (Defaults shown)
+QDRANT_URL=http://localhost:6333
+STORAGE_PROVIDER=local
+VERBOSE_USAGE=1
 ```
 
-### 3. Run
+### 4. Run
 
 ```bash
+# Start Vector DB
+docker run -d -p 6333:6333 qdrant/qdrant
+
+# Start Server
 python server.py
 ```
 
-Open http://localhost:8000 for the Knowledge Console UI.
+Access the **Knowledge Console** at `http://localhost:8000`.
 
-## 📁 Project Structure
+## 🧠 Technical Implementation
 
-```
-multimodal-rag-chatbot/
-├── config.py          # Centralized configuration
-├── embeddings.py      # Voyage Multimodal-3 client
-├── llm_client.py      # Qwen3-VL for generation
-├── ingestion.py       # Document/image ingestion
-├── retrieval.py       # RRF hybrid search
-├── escalation.py      # Human handoff logic
-├── handoff.py         # Webhook/Slack integration
-├── chatbot.py         # Main orchestration
-├── server.py          # FastAPI endpoints
-├── storage.py         # Image storage (S3/local)
-├── static/
-│   └── index.html     # Knowledge Console UI
-├── requirements.txt
-├── .env.example
-└── README.md
-```
+### Ingestion Pipeline (`ingestion.py`)
+The system employs a **Multi-Vector Strategy** to solve modality asymmetry:
+1.  **Image-Dense:** Encodes pure visual features.
+2.  **Text-Dense:** Encodes caption and extracted text.
+3.  **Combined-Dense:** Fuses visual and textual semantics.
+4.  **Sparse:** BM25 vector for keyword precision.
+5.  **Fingerprint:** Perceptual hash (pHash/dHash) for exact duplicate detection.
 
-## 📡 API Endpoints
+### Retrieval Logic (`retrieval.py`)
+Queries are classified into intents (`VISUAL`, `TEXTUAL`, `EXACT`) to weight strategies dynamically:
+*   **Text Queries:** Search `text_dense` + `combined_dense` + `sparse`.
+*   **Image Queries:** Search `image_dense` + `combined_dense` + `fingerprint`.
+*   **Confidence:** Calculated using calibrated cosine similarity thresholds, not raw RRF scores.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Knowledge Console UI |
-| `/chat` | POST | Text-only chat |
-| `/chat/multimodal` | POST | Chat with image upload |
-| `/chat/stream` | POST | Streaming response |
-| `/ingest/image` | POST | Add image to KB |
-| `/ingest/text` | POST | Add text to KB |
-| `/search` | POST | Search knowledge base |
-| `/health` | GET | Health check |
+### Models Used
+| Component | Model | Provider | Cost (Est) |
+|-----------|-------|----------|------------|
+| **Embedding** | `voyage-multimodal-3` | Voyage AI | $0.12 / 1M tokens |
+| **Generation** | `qwen3-vl-plus` | Alibaba Cloud | ~$4.00 / 1M tokens |
+| **Captioning** | `qwen3-vl-flash` | Alibaba Cloud | Free (limited) |
 
-## 🔑 Model Usage
+## 📡 API Reference
 
-| Task | Model | Purpose |
-|------|-------|---------|
-| Embeddings | Voyage Multimodal-3 | Dense retrieval (1024-dim) |
-| Captioning | Qwen3-VL-Flash | Image → text for BM25 |
-| Generation | Qwen3-VL-Plus | RAG response synthesis |
-| Sentiment | Qwen-Turbo | Escalation detection |
+| Endpoint | Method | Payload | Description |
+|----------|--------|---------|-------------|
+| `/chat` | POST | `{message, conversation_id}` | Text-only chat |
+| `/chat/multimodal` | POST | `Multipart Form` | Chat with image upload |
+| `/ingest/file` | POST | `Multipart Form` | Ingest PDF/Images (Streaming NDJSON) |
+| `/search` | POST | `{query, top_k}` | Debug retrieval results |
 
-## ⚡ Performance
-
-| Metric | Target | How Achieved |
-|--------|--------|--------------|
-| TTFT | <2s | Voyage API, no local model loading |
-| Retrieval accuracy | 90%+ | RRF fusion + Voyage precision |
-| Tables/charts | 85%+ | Voyage's document understanding |
-
-## 🎨 Frontend
-
-The Knowledge Console features:
-- **Dark theme** with warm amber accents
-- **Split layout**: Chat + live source panel  
-- **Distinctive typography**: Crimson Pro + IBM Plex Mono
-- **Smooth animations** and micro-interactions
-- **Mobile responsive** with collapsible sources
-
-## 🚨 Escalation Flow
-
-1. **Explicit request**: "talk to human" → Immediate handoff
-2. **Low confidence**: <0.5 retrieval score → Handoff
-3. **LLM uncertainty**: "I don't have info" → Handoff
-4. **Negative sentiment**: Frustration detected → Handoff
-5. **Repeated failures**: 2+ failed attempts → Handoff
-
-## 📝 License
-
-MIT
+## 🛡️ Escalation Logic
+The system hands off to human agents (Webhook/Slack) if:
+1.  **Explicit Request:** "Talk to human".
+2.  **Low Confidence:** Retrieval score < 0.5.
+3.  **Negative Sentiment:** User frustration detected (< -0.6).
+4.  **Repeated Failures:** 2+ consecutive fallback responses.
