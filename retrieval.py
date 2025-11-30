@@ -151,6 +151,8 @@ class ConfidenceCalculator:
     
     IMPORTANT: Uses the actual cosine similarity scores, NOT the RRF fused scores.
     RRF scores are much smaller (0.01-0.1) and not comparable to cosine thresholds.
+    
+    Note: Sparse/BM25 scores are NOT cosine similarities and must be excluded.
     """
     
     # Empirically calibrated thresholds for Voyage embeddings (cosine similarity)
@@ -159,11 +161,40 @@ class ConfidenceCalculator:
     COSINE_MARGINAL = 0.55   # Weak match
     COSINE_POOR = 0.40       # Unlikely relevant
     
+    # Cosine-based strategy suffixes (exclude sparse which uses BM25 scoring)
+    COSINE_SCORE_KEYS = ["visual_score", "textual_score", "combined_score", "combined_text_score"]
+    
+    @classmethod
+    def _collect_cosine_scores(cls, doc: RetrievedDocumentV2) -> Dict[str, float]:
+        """
+        Collect all cosine similarity scores from a document.
+        Excludes sparse scores as they're BM25 weights, not cosine similarities.
+        
+        Returns: Dict mapping score_name -> score_value (only non-zero scores)
+        """
+        scores = {}
+        
+        # Direct attributes
+        if doc.visual_score > 0:
+            scores["visual_score"] = doc.visual_score
+        if doc.textual_score > 0:
+            scores["textual_score"] = doc.textual_score
+        
+        # Metadata scores (from all strategies)
+        if doc.metadata:
+            for key in cls.COSINE_SCORE_KEYS:
+                value = doc.metadata.get(key)
+                if value and value > 0:
+                    scores[key] = value
+        
+        return scores
+    
     @classmethod
     def calculate(
         cls,
         documents: List[RetrievedDocumentV2],
-        query_intent: QueryIntent
+        query_intent: QueryIntent,
+        verbose: bool = False
     ) -> float:
         """
         Calculate calibrated confidence score.
@@ -173,36 +204,29 @@ class ConfidenceCalculator:
         2. Score gap between top results (distinctiveness)
         3. Match type alignment with query intent
         4. Exact match bonus
+        
+        Args:
+            documents: Retrieved documents (best first)
+            query_intent: Classified intent of the query
+            verbose: If True, print diagnostic info
         """
         if not documents:
             return 0.0
         
         top_doc = documents[0]
         
-        # Get the best ACTUAL cosine similarity score (not RRF score!)
-        # The visual_score, textual_score, and combined scores contain actual cosine similarities
-        actual_scores = [
-            top_doc.visual_score,
-            top_doc.textual_score,
-        ]
-        # Also check for combined scores in metadata if available
-        if top_doc.metadata:
-            if top_doc.metadata.get("combined_text_score"):
-                actual_scores.append(top_doc.metadata["combined_text_score"])
-            if top_doc.metadata.get("combined_score"):
-                actual_scores.append(top_doc.metadata["combined_score"])
+        # Collect all cosine scores for top document
+        top_scores = cls._collect_cosine_scores(top_doc)
         
-        # Filter out zeros and get max
-        actual_scores = [s for s in actual_scores if s > 0]
-        
-        # If we have actual scores, use the max; otherwise fallback to doc.score
-        # (which would be RRF score - not ideal but better than nothing)
-        if actual_scores:
-            top_score = max(actual_scores)
+        # Get the best actual cosine similarity score
+        if top_scores:
+            top_score = max(top_scores.values())
+            top_score_source = max(top_scores.items(), key=lambda x: x[1])[0]
         else:
             # Fallback: RRF scores are typically 0.01-0.1, so scale them up
             # This is a rough heuristic for when actual scores aren't available
             top_score = min(top_doc.score * 10, 1.0)
+            top_score_source = "rrf_scaled"
         
         # 1. Base confidence from top score
         if top_score >= cls.COSINE_EXCELLENT:
@@ -216,10 +240,10 @@ class ConfidenceCalculator:
         
         # 2. Score gap bonus (distinct answer is more confident)
         gap_bonus = 0.0
+        doc2_max = 0.0
         if len(documents) >= 2:
-            doc2_scores = [documents[1].visual_score, documents[1].textual_score]
-            doc2_scores = [s for s in doc2_scores if s > 0]
-            doc2_max = max(doc2_scores) if doc2_scores else 0
+            doc2_scores = cls._collect_cosine_scores(documents[1])
+            doc2_max = max(doc2_scores.values()) if doc2_scores else 0
             
             gap = top_score - doc2_max
             if gap > 0.15:
@@ -231,12 +255,28 @@ class ConfidenceCalculator:
             gap_bonus = 0.05
         
         # 3. Intent alignment bonus
+        # Check if the score from the intent-appropriate strategy is strong
         intent_bonus = 0.0
         if query_intent == QueryIntent.VISUAL_SEARCH:
-            if top_doc.visual_score > 0.7:
+            # For visual search, visual_score or combined should be strong
+            visual_relevant = max(
+                top_scores.get("visual_score", 0),
+                top_scores.get("combined_score", 0)
+            )
+            if visual_relevant > 0.7:
                 intent_bonus = 0.05
         elif query_intent == QueryIntent.TEXTUAL_SEARCH:
-            if top_doc.textual_score > 0.7:
+            # For textual search, textual_score OR combined_text_score should be strong
+            text_relevant = max(
+                top_scores.get("textual_score", 0),
+                top_scores.get("combined_text_score", 0),
+                top_scores.get("combined_score", 0)
+            )
+            if text_relevant > 0.7:
+                intent_bonus = 0.05
+        elif query_intent == QueryIntent.MULTIMODAL:
+            # For multimodal, combined score should be strong
+            if top_scores.get("combined_score", 0) > 0.7:
                 intent_bonus = 0.05
         
         # 4. Exact match bonus (perceptual hash match)
@@ -254,6 +294,13 @@ class ConfidenceCalculator:
         # Apply penalty for very low top scores
         if top_score < cls.COSINE_POOR:
             confidence *= 0.7  # Less aggressive penalty
+        
+        # Diagnostic logging
+        if verbose:
+            print(f"📊 [Confidence] Top scores: {top_scores}")
+            print(f"📊 [Confidence] Best score: {top_score:.4f} from {top_score_source}")
+            print(f"📊 [Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f}")
+            print(f"📊 [Confidence] Final: {confidence:.2%}")
         
         return confidence
 
@@ -315,9 +362,9 @@ class HybridRetrieverV2:
         
         # Classify query intent
         query_intent = self.classifier.classify(query_text, query_image is not None)
-        print(f"🔍 [Retrieval] Query intent: {query_intent.value}")
-        print(f"🔍 [Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
-        print(f"🔍 [Retrieval] Has image: {query_image is not None}")
+        print(f"ðŸ” [Retrieval] Query intent: {query_intent.value}")
+        print(f"ðŸ” [Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
+        print(f"ðŸ” [Retrieval] Has image: {query_image is not None}")
         
         # Build filter
         search_filter = None
@@ -330,13 +377,13 @@ class HybridRetrieverV2:
             )
         
         # Generate query embeddings
-        print(f"⏳ [Retrieval] Generating query embeddings...")
+        print(f"â³ [Retrieval] Generating query embeddings...")
         query_embeddings = await voyage_embedder_v2.encode_query_adaptive(
             text=query_text,
             image=query_image,
             query_intent=query_intent.value
         )
-        print(f"✅ [Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
+        print(f"âœ… [Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
         
         # Strategy 1: Exact match via perceptual hash (if image provided)
         exact_results = []
@@ -442,8 +489,8 @@ class HybridRetrieverV2:
         top_results = fused[:top_k]
         
         # Log search results
-        print(f"📋 [Retrieval] Strategies used: {strategies_used}")
-        print(f"📋 [Retrieval] Results per strategy: {{{', '.join(f'{k}: {len(v)}' for k, v in results_dict.items())}}}")
+        print(f"ðŸ“‹ [Retrieval] Strategies used: {strategies_used}")
+        print(f"ðŸ“‹ [Retrieval] Results per strategy: {{{', '.join(f'{k}: {len(v)}' for k, v in results_dict.items())}}}")
         
         # Convert to documents with match details
         documents = []
@@ -465,19 +512,21 @@ class HybridRetrieverV2:
             else:
                 semantic_matches += 1
         
-        # Calculate calibrated confidence
-        confidence = self.confidence_calc.calculate(documents, query_intent)
+        # Calculate calibrated confidence (with verbose logging if enabled)
+        import os
+        verbose_confidence = os.environ.get("VERBOSE_USAGE", "1") == "1"
+        confidence = self.confidence_calc.calculate(documents, query_intent, verbose=verbose_confidence)
         
         retrieval_ms = (time.time() - start_time) * 1000
         
         # Log results summary
         if documents:
             top_doc = documents[0]
-            print(f"🎯 [Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
-            print(f"📄 [Retrieval] Caption: {(top_doc.caption or 'None')[:150]}...")
+            print(f"ðŸŽ¯ [Retrieval] Top result: {top_doc.source_display} (score: {top_doc.score:.4f}, type: {top_doc.match_type})")
+            print(f"ðŸ“„ [Retrieval] Caption: {(top_doc.caption or 'None')[:150]}...")
         else:
-            print(f"⚠️ [Retrieval] No documents found!")
-        print(f"📊 [Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
+            print(f"âš ï¸ [Retrieval] No documents found!")
+        print(f"ðŸ“Š [Retrieval] Confidence: {confidence:.2%} | Time: {retrieval_ms:.1f}ms")
         
         return RetrievalResultV2(
             documents=documents,
@@ -723,26 +772,38 @@ class HybridRetrieverV2:
         strategies = match_info.get("strategies", [])
         hamming = match_info.get("hamming_distance", 64)
         
-        # Get all strategy scores for confidence calculation
+        # Extract all cosine-based strategy scores
+        # Note: sparse_score is BM25 weight, not cosine similarity - exclude from cosine comparisons
+        visual_score = match_info.get("visual_score", 0.0)
+        textual_score = match_info.get("textual_score", 0.0)
         combined_text_score = match_info.get("combined_text_score", 0.0)
         combined_score = match_info.get("combined_score", 0.0)
         
+        # Determine match type based on strongest cosine score
         if hamming < 5:
             match_type = "exact"
-        elif "visual" in strategies and match_info.get("visual_score", 0) > 0.7:
+        elif visual_score > 0.7 and visual_score >= max(textual_score, combined_text_score, combined_score):
             match_type = "visual"
-        elif "textual" in strategies and match_info.get("textual_score", 0) > 0.7:
+        elif textual_score > 0.7 and textual_score >= max(visual_score, combined_text_score, combined_score):
             match_type = "textual"
-        elif combined_text_score > 0.7 or combined_score > 0.7:
+        elif combined_text_score > 0.55 or combined_score > 0.55:
+            # Combined strategies indicate semantic match
+            match_type = "semantic"
+        elif max(visual_score, textual_score, combined_text_score, combined_score) > 0:
             match_type = "semantic"
         else:
             match_type = "semantic"
         
-        # Include additional scores in metadata for confidence calculation
+        # Include ALL strategy scores in metadata for confidence calculation
+        # This enables proper gap bonus calculation for non-top documents
         extra_metadata = {
             k: v for k, v in payload.items()
             if k not in ["type", "url", "caption", "text", "title", "fingerprint"]
         }
+        
+        # Preserve all cosine-based scores for downstream confidence calculation
+        extra_metadata["visual_score"] = visual_score
+        extra_metadata["textual_score"] = textual_score
         extra_metadata["combined_text_score"] = combined_text_score
         extra_metadata["combined_score"] = combined_score
         extra_metadata["strategies"] = strategies
@@ -757,8 +818,8 @@ class HybridRetrieverV2:
             title=payload.get("title"),
             metadata=extra_metadata,
             match_type=match_type,
-            visual_score=match_info.get("visual_score", 0.0),
-            textual_score=match_info.get("textual_score", 0.0),
+            visual_score=visual_score,
+            textual_score=textual_score,
             fingerprint_distance=hamming
         )
 
