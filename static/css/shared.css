@@ -73,6 +73,19 @@ body {
     gap: var(--space-md);
 }
 
+.logo-image {
+    height: 40px;
+    width: auto;
+    object-fit: contain;
+    transition: all 0.3s ease;
+    filter: drop-shadow(0 2px 8px rgba(212, 165, 116, 0.15));
+}
+
+.logo-image:hover {
+    filter: drop-shadow(0 4px 16px rgba(212, 165, 116, 0.3));
+    transform: scale(1.05);
+}
+
 .logo-mark {
     width: 32px;
     height: 32px;

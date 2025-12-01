@@ -38,9 +38,15 @@ class ChatResponse:
     escalation_reason: Optional[str] = None
     thinking_enabled: bool = False
     latency_ms: float = 0.0
-    
+
     # For UX - display source images
     source_images: List[Dict[str, str]] = field(default_factory=list)
+
+    # Multi-turn conversation tracking
+    turn: int = 0
+    conversation_id: str = ""
+    context_warning: Optional[str] = None  # Warning message about context limits
+    images_retained: int = 0  # Number of user images still in context
 
 
 class MultimodalChatbot:
@@ -56,7 +62,20 @@ class MultimodalChatbot:
     
     def __init__(self):
         self.conversations: Dict[str, ConversationContext] = {}
-    
+
+    def _extract_text_from_content(self, content) -> str:
+        """Extract text from potentially multimodal content."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            text_parts = [
+                item.get("text", "")
+                for item in content
+                if item.get("type") == "text"
+            ]
+            return " ".join(text_parts)
+        return ""
+
     def get_or_create_context(
         self,
         conversation_id: str = None,
@@ -183,44 +202,66 @@ class MultimodalChatbot:
         stream: bool = False
     ) -> ChatResponse:
         """
-        Main chat endpoint.
-        
+        Main chat endpoint with Aeris persona and multi-turn support.
+
         Args:
             message: User's text message
             image_data: Optional image bytes from user
             conversation_id: Existing conversation ID
             user_metadata: User info for context
             stream: Return streaming response
-        
+
         Returns:
             ChatResponse with answer, sources, and metadata
         """
         start_time = time.time()
-        
+
         # Get conversation context
         context = self.get_or_create_context(conversation_id, user_metadata)
-        context.add_message("user", message)
-        
+
+        # Check if this is the first message
+        is_first_message = len(context.messages) == 0
+
         # Upload user image if provided (for VLM context)
         user_image_url = None
+        image_filename = None
         if image_data:
             try:
-                stored = await storage.upload(image_data, "user_upload.jpg")
+                import time as time_module
+                timestamp = int(time_module.time())
+                image_filename = f"user_upload_{timestamp}.jpg"
+                stored = await storage.upload(image_data, image_filename)
                 user_image_url = stored.url
             except Exception as e:
-                print(f"Ã¢Å¡Â Ã¯Â¸Â Failed to upload user image: {e}")
+                print(f"⚠️ Failed to upload user image: {e}")
                 # Continue without the image rather than crashing
-        
-        # Rewrite query if we have conversation history
+
+        # Add user message to history using V2 method (with full metadata)
+        context.add_user_message_v2(
+            text=message,
+            image_url=user_image_url,
+            image_filename=image_filename
+        )
+
+        # Query rewriting: Only if pronouns detected
+        # User Requirement: Only if pronouns detected
         search_query = message
-        if len(context.messages) > 1:
+        if context.needs_query_rewrite(message):
             try:
-                search_query = await qwen_client.rewrite_query(
-                    history=context.messages[:-1],
+                history_text = "\n".join([
+                    f"{msg['role'].upper()}: {self._extract_text_from_content(msg['content'])[:200]}"
+                    for msg in context.messages[-6:]  # Last 6 messages
+                ])
+
+                search_query = await qwen_client.rewrite_query_v2(
+                    history_summary=history_text,
                     current_query=message
                 )
+                print(f"[Query Rewrite] '{message}' → '{search_query}'")
             except Exception as e:
-                print(f"Ã¢Å¡Â Ã¯Â¸Â Query rewrite failed: {e}")
+                print(f"⚠️ Query rewrite failed: {e}")
+                # Fallback to original query
+                search_query = message
         
         # Step 1: Retrieve relevant documents (Using V2 Pipeline)
         # Note: We pass raw bytes to retrieval for perceptual hashing
@@ -255,29 +296,50 @@ class MultimodalChatbot:
         # Step 3: Build context for generation
         context_text = self._build_context(retrieval_result.documents)
         print(f"[Chatbot] Built context from {len(retrieval_result.documents)} documents")
-        
-        # Extract image URLs from retrieved docs for the VLM
-        image_urls = [
+
+        # Get retrieved image URLs (from knowledge base)
+        retrieved_image_urls = [
             doc.url for doc in retrieval_result.documents
             if doc.type == "image" and doc.url
         ]
-        
-        # Step 4: Generate response
+
+        # Get active user-uploaded images (within 3-turn window)
+        # User Requirement: Pass image for next 2-3 turns only
+        # CRITICAL: Limited to 2 images to control token budget (~3600 tokens)
+        active_user_images = context.get_active_images(max_images=2)
+
+        # PRE-FLIGHT CHECK: Prune BEFORE expensive API call if needed
+        # Prevents over-budget API calls by using heuristics
+        if context.should_prune_preemptively(num_active_images=len(active_user_images)):
+            context._auto_prune()
+            print("[Chatbot] Preemptive pruning to prevent over-budget API call")
+
+        # Step 4: Generate response WITH conversation history
         try:
-            vlm_response = await qwen_client.generate_response(
-                query=message,
+            # CRITICAL: Limit total images to control token budget
+            # Token budget breakdown (28k total):
+            # - User images (2 max): ~3600 tokens
+            # - KB images (3 max): ~5400 tokens
+            # - Total images: ~9000 tokens
+            # - Conversation text: ~19000 tokens remaining
+            max_kb_images = 3
+
+            vlm_response = await qwen_client.generate_response_v2(
+                current_query=message,
                 context=context_text,
-                image_urls=image_urls,
-                user_image_url=user_image_url
+                retrieved_image_urls=retrieved_image_urls[:max_kb_images],  # Max 3 from KB
+                user_uploaded_images=active_user_images,  # Max 2 user images
+                conversation_history=context.get_messages_for_llm_v2(),
+                enable_thinking=None  # Auto-detect
             )
         except Exception as e:
-            print(f"Ã¢ÂÅ’ Generation failed: {e}")
+            print(f"❌ Generation failed: {e}")
             return ChatResponse(
                 message="I'm having trouble generating a response right now. Please try again.",
                 confidence=0.0,
                 latency_ms=(time.time() - start_time) * 1000
             )
-        
+
         # Step 5: Full escalation evaluation
         decision = await escalation_engine.evaluate(
             user_message=message,
@@ -285,7 +347,7 @@ class MultimodalChatbot:
             llm_response=vlm_response.content,
             context=context
         )
-        
+
         if decision.should_escalate:
             return await self._handle_escalation(
                 context=context,
@@ -294,23 +356,46 @@ class MultimodalChatbot:
                 start_time=start_time,
                 partial_response=vlm_response.content
             )
-        
+
         # Step 6: Build response with sources
         latency_ms = (time.time() - start_time) * 1000
-        
+
         response = self._build_response(
             content=vlm_response.content,
             retrieval_result=retrieval_result,
             vlm_response=vlm_response,
             latency_ms=latency_ms
         )
-        
+
         # Add soft escalation offer if confidence is borderline
         if retrieval_result.confidence < config.escalation.warn_confidence_threshold:
             response.message += "\n\n_If this doesn't fully answer your question, you can ask to speak with a human agent._"
-        
-        context.add_message("assistant", response.message)
-        
+
+        # Get context warning if any
+        context_warning = context.get_warning_message()
+        if context_warning:
+            response.context_warning = context_warning
+
+        # INLINE WELCOME: Prepend compact greeting on first message
+        if is_first_message:
+            compact_welcome = "👋 **I'm Aeris, your knowledge assistant.** "
+            response.message = compact_welcome + response.message
+
+        # Add assistant message to history WITH actual API token usage
+        context.add_assistant_message_v2(
+            content=response.message,
+            api_usage={
+                "prompt_tokens": vlm_response.input_tokens,
+                "completion_tokens": vlm_response.output_tokens,
+                "total_tokens": vlm_response.input_tokens + vlm_response.output_tokens
+            }
+        )
+
+        # Add turn and conversation_id to response
+        response.turn = context.current_turn
+        response.conversation_id = context.conversation_id
+        response.images_retained = len(active_user_images)
+
         return response
     
     async def _stream_response(
@@ -323,30 +408,16 @@ class MultimodalChatbot:
         context: ConversationContext,
         start_time: float
     ) -> AsyncGenerator[str, None]:
-        """Stream response tokens for better perceived latency."""
+        """Stream response tokens for better perceived latency.
+
+        CRITICAL: Send metadata immediately in first chunk for frontend resilience.
+        This ensures conversation_id and turn are available before content streaming.
+        """
         import json
         full_response = []
 
-        try:
-            async for token in qwen_client.generate_response_stream(
-                query=query,
-                context=context_text,
-                image_urls=image_urls,
-                user_image_url=user_image_url
-            ):
-                full_response.append(token)
-                # Yield token as JSON for consistent parsing
-                yield json.dumps({"type": "token", "content": token}) + "\n"
-        except Exception as e:
-            print(f"❌ Stream error: {e}")
-            yield json.dumps({"type": "error", "content": "Error generating response"}) + "\n"
-
-        # After streaming, send metadata
-        response_text = "".join(full_response)
-        if response_text:  # Only save if we got a response
-            context.add_message("assistant", response_text)
-
-        # Prepare sources and metadata with error handling
+        # EARLY METADATA: Send immediately before streaming content
+        # This synchronizes frontend state before any tokens arrive
         try:
             source_images = self._format_source_images(retrieval_result.documents[:config.ux.max_sources_displayed])
             sources = [
@@ -364,18 +435,56 @@ class MultimodalChatbot:
             source_images = []
             sources = []
 
+        # Send immediate metadata (before tokens) for frontend synchronization
+        early_metadata = {
+            "type": "metadata",
+            "sources": sources,
+            "source_images": source_images,
+            "confidence": retrieval_result.confidence if retrieval_result else 0.0,
+            "latency_ms": 0,
+            "conversation_id": context.conversation_id,
+            "turn": context.current_turn if hasattr(context, 'current_turn') else 0,
+            "context_warning": None  # Will update at end if needed
+        }
+        yield json.dumps(early_metadata) + "\n"
+
+        try:
+            async for token in qwen_client.generate_response_stream(
+                query=query,
+                context=context_text,
+                image_urls=image_urls,
+                user_image_url=user_image_url
+            ):
+                full_response.append(token)
+                # Yield token as JSON for consistent parsing
+                yield json.dumps({"type": "token", "content": token}) + "\n"
+        except Exception as e:
+            print(f"❌ Stream error: {e}")
+            yield json.dumps({"type": "error", "content": "Error generating response"}) + "\n"
+
+        # After streaming, send final metadata with latency and context warning
+        response_text = "".join(full_response)
+        if response_text:  # Only save if we got a response
+            context.add_message("assistant", response_text)
+
         latency_ms = (time.time() - start_time) * 1000
 
-        # Send metadata as final message - always send even if empty
-        metadata = {
+        # Get context warning if any (from Phase 1)
+        context_warning = context.get_warning_message() if hasattr(context, 'get_warning_message') else None
+
+        # Send FINAL metadata with actual latency and context warning
+        # This overwrites the early metadata with complete information
+        final_metadata = {
             "type": "metadata",
             "sources": sources,
             "source_images": source_images,
             "confidence": retrieval_result.confidence if retrieval_result else 0.0,
             "latency_ms": latency_ms,
-            "conversation_id": context.conversation_id
+            "conversation_id": context.conversation_id,
+            "turn": context.current_turn if hasattr(context, 'current_turn') else 0,
+            "context_warning": context_warning
         }
-        yield json.dumps(metadata) + "\n"
+        yield json.dumps(final_metadata) + "\n"
     
     async def _handle_escalation(
         self,

@@ -97,6 +97,34 @@ class UXConfig:
 class EmbeddingConfig:
     dimension: int = 1024
 
+@dataclass
+class ConversationConfig:
+    """Multi-turn conversation settings."""
+    # User Requirements - UPDATED for Qwen-VL-Plus 32k context window
+    max_context_tokens: int = 28000  # Was 8000 - updated to reflect 32k model capability
+    warning_threshold: int = 24000  # Was 6500 - warn earlier to give users heads up
+    image_retention_turns: int = 3
+    chatbot_name: str = "Aeris"
+    welcome_enabled: bool = True
+    persona_style: str = "first_person_with_name"  # "I'm Aeris..."
+
+    # Pronoun patterns for query rewrite detection
+    pronoun_patterns: List[str] = field(default_factory=lambda: [
+        r'\b(it|that|them|these|those|this|its|their)\b'
+    ])
+
+    # Token counting strategy
+    use_api_token_counts: bool = True  # CRITICAL: Always use actual API response counts
+
+    # Image token budgeting (NEW - addresses IMPLEMENTATION_PLAN_ANALYSIS Issue #3)
+    max_user_images: int = 2  # Max user-uploaded images to include (2 = ~3600 tokens)
+    max_kb_images: int = 3  # Max knowledge base images to include (3 = ~5400 tokens)
+    # Total: 5 images max = ~9000 tokens, leaving 19k for conversation
+
+    # Preemptive pruning (NEW - addresses IMPLEMENTATION_PLAN_ANALYSIS Issue #1)
+    enable_preemptive_pruning: bool = True
+    preemptive_prune_threshold: float = 0.85  # Prune when at 85% estimated capacity
+
 # UPDATED: Using Qwen3-VL models
 class ModelTier(Enum):
     FLASH = "qwen3-vl-flash"  # Fast, cheap, great for captioning
@@ -114,6 +142,7 @@ class AppConfig:
     handoff: HandoffConfig = field(default_factory=HandoffConfig)
     ux: UXConfig = field(default_factory=UXConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    conversation: ConversationConfig = field(default_factory=ConversationConfig)
 
 try:
     config = AppConfig()

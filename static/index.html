@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Knowledge Console</title>
+    <title>Aeris - Your Knowledge Assistant</title>
     
     <!-- Distinctive typography: Crimson Pro + IBM Plex Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,35 +19,73 @@
         <!-- Header -->
         <header class="header">
             <div class="logo">
-                <div class="logo-mark">K</div>
-                <span class="logo-text">Knowledge Console</span>
+                <img src="images/Gemini_Generated_Image_cwxr3ycwxr3ycwxr.png" alt="Aeris Logo" class="logo-image">
             </div>
-            <div style="display: flex; align-items: center; gap: 1rem;">
-                <a href="/ingest" style="color: var(--text-secondary); text-decoration: none; padding: 0.5rem 1rem; border-radius: 8px; transition: all 0.2s; font-size: 13px;" onmouseover="this.style.background='var(--bg-elevated)'; this.style.color='var(--accent-primary)'" onmouseout="this.style.background='transparent'; this.style.color='var(--text-secondary)'">+ Add Documents</a>
+            <div class="header-actions">
+                <button class="btn-new-chat" onclick="startNewChat()" title="Start fresh conversation (Cmd+Shift+N)" aria-label="Start a new conversation, clearing current context">
+                    <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    <span>New Chat</span>
+                </button>
+                <a href="/ingest" class="btn-link">+ Add Documents</a>
                 <div class="header-meta">
-                    <span id="connectionStatus">● Connected</span>
+                    <div class="turn-counter" id="turnCounter" style="display: none;">
+                        <svg class="turn-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M8 12h8M12 8v8"/>
+                        </svg>
+                        <span class="turn-label">Turn</span>
+                        <span class="turn-number">1</span>
+                    </div>
+                    <span id="connectionStatus" class="connection-status">● Connected</span>
                 </div>
             </div>
         </header>
         
         <!-- Main Chat -->
         <main class="chat-container">
+            <!-- Context Warning Banner - Top Priority -->
+            <div id="contextWarning" class="context-warning" style="display: none;">
+                <div class="warning-content">
+                    <svg class="warning-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <span class="warning-text"></span>
+                </div>
+                <button class="warning-action" onclick="startNewChat()" aria-label="Start a fresh conversation to reset context">
+                    Start Fresh
+                </button>
+                <button class="warning-dismiss" onclick="dismissContextWarning()" aria-label="Dismiss context warning">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
             <div class="messages" id="messages">
                 <div class="empty-state" id="emptyState">
-                    <div class="empty-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <path d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
-                        </svg>
+                    <!-- Animated Aeris Avatar -->
+                    <div class="aeris-avatar">
+                        <div class="avatar-glow"></div>
+                        <div class="avatar-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                            </svg>
+                        </div>
                     </div>
-                    <h2 class="empty-title">Query your knowledge base</h2>
+                    <h2 class="empty-title">Hi! I'm Aeris, your knowledge assistant</h2>
                     <p class="empty-subtitle">
-                        Ask questions about documents and images in your collection. 
-                        Upload an image to search visually.
+                        I can help you find information from your uploaded manuals and documents.
+                        Ask questions in plain language or upload images to search visually.
                     </p>
-                    <div class="suggestions">
-                        <button class="suggestion" data-query="What documents do we have about quarterly reports?">Quarterly reports</button>
-                        <button class="suggestion" data-query="Show me charts related to revenue">Revenue charts</button>
-                        <button class="suggestion" data-query="Find information about the product roadmap">Product roadmap</button>
+                    <!-- Capability Pills -->
+                    <div class="capability-pills" id="capabilityPills">
+                        <!-- Pills populated dynamically -->
+                    </div>
+                    <!-- Suggestions Container -->
+                    <div class="suggestions-section">
+                        <div class="suggestions-label">Try asking about:</div>
+                        <div class="suggestions"></div>
                     </div>
                 </div>
             </div>
@@ -74,13 +112,20 @@
                             rows="1"
                         ></textarea>
                         <div class="input-actions">
-                            <button class="input-btn" onclick="document.getElementById('fileInput').click()" title="Upload image">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <button class="input-btn"
+                        onclick="document.getElementById('fileInput').click()"
+                        aria-label="Upload image for visual search"
+                        title="Upload image (Cmd+U)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                                     <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                 </svg>
                             </button>
-                            <button class="input-btn send" id="sendBtn" onclick="sendMessage()" title="Send">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <button class="input-btn send"
+                                id="sendBtn"
+                                onclick="sendMessage()"
+                                aria-label="Send message to Aeris"
+                                title="Send message (Cmd+Enter)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                                     <path d="M5 12h14M12 5l7 7-7 7"/>
                                 </svg>
                             </button>
@@ -90,7 +135,7 @@
                 <input type="file" id="fileInput" class="file-input" accept="image/*" onchange="handleImageUpload(event)">
             </div>
         </main>
-        
+
         <!-- Sources Panel -->
         <aside class="sources-panel" id="sourcesPanel">
             <div class="sources-header">

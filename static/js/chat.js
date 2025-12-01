@@ -2,6 +2,7 @@
 let conversationId = null;
 let currentImage = null;
 let isLoading = false;
+let currentTurn = 0;
 
 // API Base URL
 const API_BASE = window.location.origin;
@@ -37,13 +38,63 @@ messageInput.addEventListener('keydown', function(e) {
     }
 });
 
-// Suggestion buttons
-document.querySelectorAll('.suggestion').forEach(btn => {
-    btn.addEventListener('click', function() {
-        messageInput.value = this.dataset.query;
-        sendMessage();
+// Suggestion buttons (dynamically added)
+function attachSuggestionListeners() {
+    document.querySelectorAll('.suggestion').forEach(btn => {
+        btn.addEventListener('click', function() {
+            messageInput.value = this.dataset.query;
+            sendMessage();
+        });
     });
-});
+}
+
+// Populate empty state with capabilities and suggestions
+function populateEmptyState() {
+    const defaultCapabilities = [
+        { icon: '📄', label: 'Document Search' },
+        { icon: '🔍', label: 'Visual Search' },
+        { icon: '⚡', label: 'Fast Answers' },
+        { icon: '🎯', label: 'Precise Results' }
+    ];
+
+    const defaultSuggestions = [
+        'What are the main features?',
+        'Show me recent updates',
+        'Help me get started',
+        'Tell me about capabilities'
+    ];
+
+    // Populate capability pills
+    const pillsContainer = document.getElementById('capabilityPills');
+    if (pillsContainer) {
+        pillsContainer.innerHTML = defaultCapabilities
+            .map(cap => `
+                <div class="capability-pill">
+                    <span>${cap.icon}</span>
+                    <span>${cap.label}</span>
+                </div>
+            `)
+            .join('');
+    }
+
+    // Populate suggestions
+    const suggestionsContainer = document.querySelector('.suggestions');
+    if (suggestionsContainer) {
+        suggestionsContainer.innerHTML = defaultSuggestions
+            .map(suggestion => `
+                <button class="suggestion" data-query="${suggestion}">
+                    ${suggestion}
+                </button>
+            `)
+            .join('');
+
+        // Re-attach listeners to newly created suggestion buttons
+        attachSuggestionListeners();
+    }
+}
+
+// Initial population on page load
+populateEmptyState();
 
 // Image upload handling
 function handleImageUpload(event) {
@@ -251,7 +302,7 @@ function addMessage(role, content, imageUrl = null) {
     
     msg.innerHTML = `
         <div class="message-header">
-            <span class="message-role">${role === 'user' ? 'You' : 'Console'}</span>
+            <span class="message-role">${role === 'user' ? 'You' : 'Aeris'}</span>
             <span class="message-time">${time}</span>
         </div>
         <div class="message-content">
@@ -310,19 +361,21 @@ function addAssistantMessage(data) {
     }
     
     msg.innerHTML = `
-        <div class="message-header">
-            <span class="message-role">Console</span>
-            <span class="message-time">${time}</span>
-        </div>
-        <div class="message-content">
-            ${parseMarkdown(mainMessage)}
-            ${escalationHint}
-            ${extraContent}
-            <div class="confidence" title="${confLabel}">
-                <div class="confidence-bar">
-                    <div class="confidence-fill ${confClass}" style="width: ${data.confidence * 100}%"></div>
+        <div class="message-wrapper">
+            <div class="message-header">
+                <span class="message-role">Aeris</span>
+                <span class="message-time">${time}</span>
+            </div>
+            <div class="message-content">
+                ${parseMarkdown(mainMessage)}
+                ${escalationHint}
+                ${extraContent}
+                <div class="confidence" title="${confLabel}">
+                    <div class="confidence-bar">
+                        <div class="confidence-fill ${confClass}" style="width: ${data.confidence * 100}%"></div>
+                    </div>
+                    <span>${Math.round(data.confidence * 100)}%</span>
                 </div>
-                <span>${Math.round(data.confidence * 100)}%</span>
             </div>
         </div>
     `;
@@ -334,24 +387,112 @@ function addAssistantMessage(data) {
     updateSources(data.sources || [], data.source_images || []);
 }
 
-// Show typing indicator
-function showTyping() {
-    const typing = document.createElement('div');
-    typing.className = 'typing';
-    typing.id = 'typingIndicator';
-    typing.innerHTML = `
-        <div class="typing-dots">
-            <span></span><span></span><span></span>
-        </div>
-        <span>Searching knowledge base...</span>
-    `;
-    messagesContainer.appendChild(typing);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+// Update turn counter with animation
+function updateTurnCounter(turn) {
+    const counter = document.getElementById('turnCounter');
+    const numberEl = counter.querySelector('.turn-number');
+
+    if (turn > 0) {
+        // Update number with scale animation
+        if (numberEl) {
+            numberEl.style.transform = 'scale(1.3)';
+            setTimeout(() => {
+                numberEl.textContent = turn;
+                numberEl.style.transform = 'scale(1)';
+            }, 150);
+        }
+
+        counter.style.display = 'inline-flex';
+
+        // Celebrate milestones (every 5 turns)
+        if (turn % 5 === 0) {
+            counter.classList.add('milestone');
+            setTimeout(() => counter.classList.remove('milestone'), 600);
+        }
+    }
 }
 
-function hideTyping() {
-    const typing = document.getElementById('typingIndicator');
-    if (typing) typing.remove();
+// Show context warning with action button
+function showContextWarning(message) {
+    const warning = document.getElementById('contextWarning');
+    const textEl = warning.querySelector('.warning-text');
+
+    if (textEl) {
+        textEl.textContent = message;
+    }
+
+    warning.style.display = 'flex';
+    // No auto-hide - user must explicitly dismiss or take action
+}
+
+// Dismiss context warning
+function dismissContextWarning() {
+    const warning = document.getElementById('contextWarning');
+    warning.style.animation = 'warningSlideOut 0.3s ease-out forwards';
+
+    setTimeout(() => {
+        warning.style.display = 'none';
+        warning.style.animation = '';
+    }, 300);
+}
+
+// Start new chat
+function startNewChat() {
+    if (!confirm('Start a new conversation? Your current context will be cleared.')) {
+        return;
+    }
+
+    // Reset state
+    conversationId = null;
+    currentTurn = 0;
+    currentImage = null;
+
+    // Clear UI with new empty state
+    messagesContainer.innerHTML = `
+        <div class="empty-state" id="emptyState">
+            <div class="aeris-avatar">
+                <div class="avatar-glow"></div>
+                <div class="avatar-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                    </svg>
+                </div>
+            </div>
+            <h2 class="empty-title">Hi! I'm Aeris, your knowledge assistant</h2>
+            <p class="empty-subtitle">
+                I can help you find information from your uploaded manuals and documents.
+                Ask questions in plain language or upload images to search visually.
+            </p>
+            <div class="capability-pills" id="capabilityPills"></div>
+            <div class="suggestions-section">
+                <div class="suggestions-label">Try asking about:</div>
+                <div class="suggestions"></div>
+            </div>
+        </div>
+    `;
+
+    // Populate suggestions and capabilities
+    populateEmptyState();
+
+    const turnCounter = document.getElementById('turnCounter');
+    if (turnCounter) turnCounter.style.display = 'none';
+
+    // Dismiss warning with animation
+    dismissContextWarning();
+    sourcesList.innerHTML = `
+        <div class="sources-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+            </svg>
+            <p>Sources will appear here when you ask a question</p>
+        </div>
+    `;
+
+    clearImagePreview();
+    messageInput.value = '';
+    messageInput.focus();
+
+    attachSuggestionListeners();
 }
 
 // Update sources panel with visual grounding support
@@ -491,7 +632,7 @@ function createStreamingAssistantMessage() {
 
     msg.innerHTML = `
         <div class="message-header">
-            <span class="message-role">Console</span>
+            <span class="message-role">Aeris</span>
             <span class="message-time">${time}</span>
         </div>
         <div class="message-content">
@@ -543,7 +684,7 @@ function updateStreamingMessage(msgElement, text, metadata) {
 
     msgElement.innerHTML = `
         <div class="message-header">
-            <span class="message-role">Console</span>
+            <span class="message-role">Aeris</span>
             <span class="message-time">${time}</span>
         </div>
         <div class="message-content">
@@ -571,19 +712,29 @@ async function sendMessage() {
     isLoading = true;
     sendBtn.disabled = true;
 
-    // Show user message
+    // OPTIMISTIC UI: Show user message immediately (< 50ms)
     let imageDataUrl = null;
     if (currentImage) {
         imageDataUrl = previewImage.src;
     }
     addMessage('user', message, imageDataUrl);
 
-    // Clear input
+    // Clear input immediately
     messageInput.value = '';
     messageInput.style.height = 'auto';
 
-    // Show typing
-    showTyping();
+    // Show typing indicator while processing
+    const typingMsg = document.createElement('div');
+    typingMsg.className = 'typing';
+    typingMsg.id = 'typingIndicator';
+    typingMsg.innerHTML = `
+        <div class="typing-dots">
+            <span></span><span></span><span></span>
+        </div>
+        <span>Searching knowledge base...</span>
+    `;
+    messagesContainer.appendChild(typingMsg);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
     try {
         // Prepare form data for streaming endpoint
@@ -606,7 +757,9 @@ async function sendMessage() {
             throw new Error(`HTTP ${response.status}`);
         }
 
-        hideTyping();
+        // Remove typing indicator
+        const typingEl = document.getElementById('typingIndicator');
+        if (typingEl) typingEl.remove();
 
         // Create assistant message container for streaming
         const assistantMsg = createStreamingAssistantMessage();
@@ -645,12 +798,17 @@ async function sendMessage() {
                 try {
                     const parsed = JSON.parse(data);
 
+                    // EARLY METADATA: Received immediately before streaming
+                    if (parsed.type === 'metadata') {
+                        metadata = parsed;
+                        conversationId = parsed.conversation_id;
+                        currentTurn = parsed.turn || 0;
+                        updateTurnCounter(currentTurn);
+                    }
+
                     if (parsed.type === 'token') {
                         fullText += parsed.content;
                         updateStreamingMessageContent(assistantMsg, fullText);
-                    } else if (parsed.type === 'metadata') {
-                        metadata = parsed;
-                        conversationId = parsed.conversation_id;
                     } else if (parsed.type === 'error') {
                         fullText += '\n\n' + parsed.content;
                         updateStreamingMessageContent(assistantMsg, fullText);
@@ -664,6 +822,11 @@ async function sendMessage() {
         // Final update with metadata
         if (metadata) {
             updateStreamingMessage(assistantMsg, fullText, metadata);
+
+            // Show context warning if present
+            if (metadata.context_warning) {
+                showContextWarning(metadata.context_warning);
+            }
         } else {
             // Fallback if metadata never arrived
             console.warn('No metadata received, using defaults');
@@ -678,7 +841,8 @@ async function sendMessage() {
 
     } catch (error) {
         console.error('Error:', error);
-        hideTyping();
+        const typingEl = document.getElementById('typingIndicator');
+        if (typingEl) typingEl.remove();
         addMessage('assistant', `Sorry, I encountered an error: ${error.message}. Please try again.`);
     } finally {
         isLoading = false;
@@ -686,6 +850,35 @@ async function sendMessage() {
         clearImagePreview();
     }
 }
+
+// Keyboard Shortcuts
+document.addEventListener('keydown', (e) => {
+    // Cmd/Ctrl + Enter = Send message
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        sendMessage();
+    }
+
+    // Cmd/Ctrl + Shift + N = New chat
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'N') {
+        e.preventDefault();
+        startNewChat();
+    }
+
+    // Cmd/Ctrl + U = Upload image
+    if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
+        e.preventDefault();
+        document.getElementById('fileInput').click();
+    }
+
+    // Escape = Close modal or dismiss warning
+    if (e.key === 'Escape') {
+        const modal = document.getElementById('imageModal');
+        if (modal && modal.classList.contains('active')) {
+            closeImageModal();
+        }
+    }
+});
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {

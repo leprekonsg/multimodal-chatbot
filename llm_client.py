@@ -868,12 +868,12 @@ Answer based on the context. If information is missing, clearly state that."""
     async def rewrite_query(self, history: List[Dict[str, str]], current_query: str) -> str:
         if not history:
             return current_query
-        
+
         history_text = "\n".join([
-            f"{msg['role'].upper()}: {msg['content'][:200]}" 
+            f"{msg['role'].upper()}: {msg['content'][:200]}"
             for msg in history[-4:]
         ])
-        
+
         prompt = f"""Chat History:
 {history_text}
 
@@ -887,7 +887,7 @@ Rewrite the query to be standalone. Return ONLY the rewritten query."""
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100
             )
-            
+
             if response.usage:
                 tracker.track_qwen(response.usage.prompt_tokens, response.usage.completion_tokens)
 
@@ -897,7 +897,228 @@ Rewrite the query to be standalone. Return ONLY the rewritten query."""
             return rewritten
         except Exception:
             return current_query
-    
+
+    async def generate_response_v2(
+        self,
+        current_query: str,
+        context: str,
+        retrieved_image_urls: List[str] = None,
+        user_uploaded_images: List[str] = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        enable_thinking: bool = None
+    ) -> VLMResponse:
+        """
+        Generate RAG response with full multi-turn conversation support.
+
+        Args:
+            current_query: User's latest question (for logging)
+            context: Retrieved knowledge base context
+            retrieved_image_urls: Images from knowledge base (RAG results)
+            user_uploaded_images: User's uploaded images (within retention window)
+            conversation_history: Full conversation with turn metadata
+            enable_thinking: Enable Qwen thinking mode
+
+        Returns:
+            VLMResponse with content (reasoning_content excluded)
+        """
+        import time
+        start_time = time.time()
+
+        # System prompt with Aeris persona
+        # User Requirement: First-person with name
+        system_prompt = """You are Aeris, a helpful multimodal assistant that answers questions based on a knowledge base of technical manuals and documents.
+
+**Your personality:**
+- Friendly and approachable - use first-person: "I'm Aeris, and I..."
+- Professional but not robotic
+- Patient with follow-up questions
+
+**Your capabilities:**
+- Analyze both text and images to answer questions accurately
+- Maintain context across multiple conversation turns
+- Reference specific sources when providing information
+- Admit clearly when information is not in your knowledge base
+
+**Guidelines:**
+1. Answer based ONLY on the provided CONTEXT and retrieved images
+2. Use conversation history to understand pronouns and references (e.g., "it" refers to the diagram from Turn 2)
+3. If information is missing, clearly state: "I don't have information about [topic] in my knowledge base"
+4. Cite sources when possible: "According to the Hydraulic Systems Manual, page 12..."
+5. For images: "In the diagram you uploaded..." or "Looking at the retrieved schematic..."
+6. Be concise but thorough - prioritize actionable information
+
+**Context awareness:**
+- You can see turn numbers: [Turn 3] means this is the third exchange
+- When you see [📷 User uploaded: X], the user included an image in that turn
+- Images remain available for 3 turns after upload for detailed analysis"""
+
+        # Build messages array
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Add conversation history (already formatted with metadata)
+        if conversation_history:
+            # Exclude the last user message (we'll rebuild it with full context)
+            messages.extend(conversation_history[:-1])
+
+        # Build current user message with all context
+        current_content = []
+
+        # 1. Add retrieved images FIRST (from knowledge base)
+        # Note: Caller (chatbot.py) already limits to max_kb_images (3)
+        if retrieved_image_urls:
+            for url in retrieved_image_urls:
+                final_url = self._process_image_url(url)
+                if final_url:
+                    current_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": final_url}
+                    })
+
+        # 2. Add user's uploaded images (within retention window)
+        # User Requirement: Pass image for next 2-3 turns only
+        if user_uploaded_images:
+            for url in user_uploaded_images:
+                final_url = self._process_image_url(url)
+                if final_url:
+                    current_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": final_url}
+                    })
+
+        # 3. Add text prompt with knowledge base context
+        user_prompt = f"""Based on the following knowledge base context and images, answer my question.
+
+KNOWLEDGE BASE CONTEXT:
+{context}
+
+MY QUESTION: {current_query}
+
+Remember to:
+- Use the context and images above
+- Reference which sources you're using
+- If the answer isn't in the context, tell me clearly
+- Consider our conversation history for context (pronouns, references)"""
+
+        current_content.append({"type": "text", "text": user_prompt})
+
+        messages.append({
+            "role": "user",
+            "content": current_content
+        })
+
+        # Determine thinking mode
+        if enable_thinking is None:
+            enable_thinking = self._should_use_thinking(current_query)
+
+        extra_body = {}
+        if enable_thinking:
+            extra_body["enable_thinking"] = True
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=ModelTier.PLUS.value,
+                messages=messages,
+                max_tokens=config.qwen.max_output_tokens,
+                extra_body=extra_body if extra_body else None
+            )
+
+            if response.usage:
+                tracker.track_qwen(
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+
+            latency_ms = (time.time() - start_time) * 1000
+
+            # CRITICAL: Only return content, not reasoning_content
+            # Per Alibaba docs and user requirement
+            return VLMResponse(
+                content=response.choices[0].message.content,
+                model=ModelTier.PLUS.value,
+                thinking_enabled=enable_thinking,
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+                latency_ms=latency_ms
+            )
+
+        except Exception as e:
+            print(f"[X] Qwen Generation Error: {e}")
+            raise
+
+    async def rewrite_query_v2(
+        self,
+        history_summary: str,
+        current_query: str
+    ) -> str:
+        """
+        Rewrite conversational query to be standalone.
+
+        Enhanced to handle BOTH explicit pronouns AND implicit context references.
+        Triggered by pronoun detection but handles broader contextual rewrites.
+        """
+        system_prompt = """You rewrite conversational queries to be standalone and context-independent.
+
+EXAMPLES:
+
+1. Pronoun Reference:
+   History: "The X500 hydraulic pump has a blue pressure valve."
+   Query: "How does it work?"
+   Rewrite: "How does the X500 hydraulic pump work?"
+
+2. Implicit Reference (NO pronoun):
+   History: "The X500 pump uses a centrifugal design."
+   Query: "What is the maintenance schedule?"
+   Rewrite: "What is the maintenance schedule for the X500 hydraulic pump?"
+
+3. Implicit Part Reference:
+   History: "The X500 pump has a blue seal at the top."
+   Query: "Is the seal compatible with other models?"
+   Rewrite: "Is the blue seal from the X500 pump compatible with other pump models?"
+
+4. Already Standalone:
+   History: "The X500 pump..."
+   Query: "Show me all hydraulic system diagrams."
+   Rewrite: "Show me all hydraulic system diagrams." (unchanged)
+
+RULES:
+- Incorporate key entities from history (product names, part names, specifications)
+- Preserve original intent and specificity
+- If query is already standalone and clear, return unchanged
+- Be concise - add only necessary context from history
+- Focus on the last 2-3 exchanges for most relevant context"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"CONVERSATION HISTORY:\n{history_summary}\n\nCURRENT QUERY: {current_query}\n\nREWRITTEN QUERY:"
+            }
+        ]
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=ModelTier.FLASH.value,  # Fast model for query rewriting
+                messages=messages,
+                max_tokens=100,
+                temperature=0.3  # Lower temperature for consistent rewrites
+            )
+
+            rewritten = response.choices[0].message.content.strip()
+
+            # Track usage
+            if response.usage:
+                tracker.track_qwen(
+                    input_tokens=response.usage.prompt_tokens,
+                    output_tokens=response.usage.completion_tokens
+                )
+
+            return rewritten
+
+        except Exception as e:
+            print(f"[X] Query rewrite error: {e}")
+            # Fallback to original query
+            return current_query
+
     def _should_use_thinking(self, query: str) -> bool:
         query_lower = query.lower()
         triggers = config.ux.thinking_mode_triggers

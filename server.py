@@ -51,6 +51,11 @@ class ChatResponseModel(BaseModel):
     source_images: List[dict] = []
     latency_ms: float
 
+    # New fields for multi-turn support
+    turn: int = 0
+    context_warning: Optional[str] = None
+    images_retained: int = 0  # Number of user images still in context
+
 class IngestRequest(BaseModel):
     """Ingestion request for text."""
     text: str = Field(..., description="Text content to ingest")
@@ -334,7 +339,9 @@ async def chat_stream(
                 "source_images": [],
                 "confidence": 0.0,
                 "latency_ms": 0,
-                "conversation_id": conversation_id or ""
+                "conversation_id": conversation_id or "",
+                "turn": 0,
+                "context_warning": None
             })
             yield f"data: {metadata}\n\n"
             yield "data: [DONE]\n\n"
