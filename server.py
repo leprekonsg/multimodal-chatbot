@@ -196,7 +196,7 @@ async def get_usage():
     stats = tracker.total
     cost = (
         (stats.voyage_tokens / 1_000_000) * 0.12 +
-        (stats.qwen_input_tokens / 1_000) * 0.004 + 
+        (stats.qwen_input_tokens / 1_000) * 0.004 +
         (stats.qwen_output_tokens / 1_000) * 0.012
     )
     return UsageResponse(
@@ -206,6 +206,22 @@ async def get_usage():
         qwen_output_tokens=stats.qwen_output_tokens,
         estimated_cost_usd=round(cost, 4)
     )
+
+@app.get("/config/ux")
+async def get_ux_config():
+    """
+    Get UX configuration for component relevance display.
+
+    Returns thresholds and visual styling for 4-tier gradual hierarchy.
+    Frontend should use this to render components with appropriate opacity,
+    color, and border width based on relevance_score.
+    """
+    return {
+        "component_relevance_tiers": config.ux.component_relevance_tiers,
+        "component_visual_tiers": config.ux.component_visual_tiers,
+        "show_source_images": config.ux.show_source_images,
+        "max_sources_displayed": config.ux.max_sources_displayed
+    }
 
 @app.post("/chat", response_model=ChatResponseModel)
 async def chat(request: ChatRequest):

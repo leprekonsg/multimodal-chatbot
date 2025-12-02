@@ -3,6 +3,9 @@ let conversationId = null;
 let currentImage = null;
 let isLoading = false;
 let currentTurn = 0;
+let uxConfig = null;
+let relevanceThreshold = 0.0; // Default: show all components
+let currentSourceImages = null; // Store for threshold updates
 
 // API Base URL
 const API_BASE = window.location.origin;
@@ -23,6 +26,47 @@ const modalTitle = document.getElementById('modalTitle');
 const modalImage = document.getElementById('modalImage');
 const modalContainer = document.getElementById('modalContainer');
 const modalLegend = document.getElementById('modalLegend');
+
+// Load UX config on page load
+async function loadUXConfig() {
+    try {
+        const response = await fetch(`${API_BASE}/config/ux`);
+        if (response.ok) {
+            uxConfig = await response.json();
+            console.log('UX Config loaded:', uxConfig);
+        } else {
+            console.warn('Failed to load UX config, using defaults');
+        }
+    } catch (error) {
+        console.error('Error loading UX config:', error);
+    }
+}
+
+// Determine visual tier based on relevance score
+function getVisualTier(relevanceScore) {
+    if (!uxConfig) {
+        // Fallback default styling if config not loaded
+        return {
+            opacity: 0.7,
+            color: '#D4A574',
+            border_width: 2,
+            font_size: '11px',
+            font_weight: '400'
+        };
+    }
+
+    const tiers = uxConfig.component_relevance_tiers;
+
+    if (relevanceScore >= tiers.highly_relevant) {
+        return uxConfig.component_visual_tiers.highly_relevant;
+    } else if (relevanceScore >= tiers.relevant) {
+        return uxConfig.component_visual_tiers.relevant;
+    } else if (relevanceScore >= tiers.somewhat_relevant) {
+        return uxConfig.component_visual_tiers.somewhat_relevant;
+    } else {
+        return uxConfig.component_visual_tiers.low_relevant;
+    }
+}
 
 // Auto-resize textarea
 messageInput.addEventListener('input', function() {
@@ -132,42 +176,57 @@ function openImageModal(source) {
     const existingOverlays = modalContainer.querySelectorAll('.bbox-overlay');
     existingOverlays.forEach(el => el.remove());
 
-    // Render Bounding Boxes
+    // Render Bounding Boxes with relevance-based visual hierarchy
     if (source.components && source.components.length > 0) {
-        source.components.forEach((c, i) => {
+        // Filter by threshold
+        const visibleComponents = source.components.filter(c =>
+            (c.relevance_score || 0) >= relevanceThreshold
+        );
+
+        visibleComponents.forEach((c, i) => {
             if (c.bbox_2d && c.bbox_2d.length === 4) {
                 const [x1, y1, x2, y2] = c.bbox_2d;
-                const colors = ['#D4A574', '#6B8B6B', '#C17B7B', '#7B9BC1', '#B87BC1'];
-                const color = colors[i % colors.length];
-                
+                const relevanceScore = c.relevance_score || 0;
+                const visualTier = getVisualTier(relevanceScore);
+
                 const el = document.createElement('div');
                 el.className = 'bbox-overlay';
+                el.setAttribute('data-relevance', relevanceScore.toFixed(2));
+                el.setAttribute('title', `${c.label || ''} (${Math.round(relevanceScore * 100)}% relevant)`);
+
                 // Convert 0-1000 range to percentage
                 el.style.left = (x1 / 10) + '%';
                 el.style.top = (y1 / 10) + '%';
                 el.style.width = ((x2 - x1) / 10) + '%';
                 el.style.height = ((y2 - y1) / 10) + '%';
-                el.style.borderColor = color;
+                el.style.borderColor = visualTier.color;
+                el.style.borderWidth = visualTier.border_width + 'px';
                 el.style.opacity = '1'; // Always visible in modal
-                
-                el.innerHTML = `<span class="bbox-label" style="background:${color}">${c.label || ''}</span>`;
+                el.style.backgroundColor = `${visualTier.color}20`;
+
+                el.innerHTML = `<span class="bbox-label" style="background:${visualTier.color};color:#1a1a1a;font-size:${visualTier.font_size};font-weight:${visualTier.font_weight};">${c.label || ''}</span>`;
                 modalContainer.appendChild(el);
             }
         });
     }
     
-    // Render Legend
+    // Render Legend - show only visible components
     modalLegend.innerHTML = '';
     if (source.components && source.components.length > 0) {
-        source.components.forEach((c, i) => {
-            const colors = ['#D4A574', '#6B8B6B', '#C17B7B', '#7B9BC1', '#B87BC1'];
-            const color = colors[i % colors.length];
-            
+        const visibleComponents = source.components.filter(c =>
+            (c.relevance_score || 0) >= relevanceThreshold
+        );
+
+        visibleComponents.forEach((c, i) => {
+            const relevanceScore = c.relevance_score || 0;
+            const visualTier = getVisualTier(relevanceScore);
+            const relevancePercent = Math.round(relevanceScore * 100);
+
             const item = document.createElement('div');
             item.className = 'legend-item';
             item.innerHTML = `
-                <div class="legend-color" style="background: ${color}"></div>
-                <span>${c.label || c.type}</span>
+                <div class="legend-color" style="background: ${visualTier.color}"></div>
+                <span>${c.label || c.type} <span style="color: var(--text-muted); font-size: 11px;">(${relevancePercent}%)</span></span>
             `;
             modalLegend.appendChild(item);
         });
@@ -497,6 +556,17 @@ function startNewChat() {
 
 // Update sources panel with visual grounding support
 function updateSources(sources, sourceImages) {
+    // Store current source images for threshold updates
+    currentSourceImages = sourceImages.length > 0 ? sourceImages : sources.map(s => ({
+        url: s.url,
+        title: s.title,
+        caption: '',
+        components: [],
+        match_type: 'semantic',
+        score: s.relevance_score,
+        type: s.type
+    }));
+
     if (!sources.length && !sourceImages.length) {
         sourcesList.innerHTML = `
             <div class="sources-empty">
@@ -508,20 +578,11 @@ function updateSources(sources, sourceImages) {
         `;
         return;
     }
-    
+
     sourcesList.innerHTML = '';
-    
-    // Use sourceImages directly as they now contain all the data we need
-    const displaySources = sourceImages.length > 0 ? sourceImages : sources.map(s => ({
-        url: s.url,
-        title: s.title,
-        caption: '',
-        components: [],
-        match_type: 'semantic',
-        score: s.relevance_score,
-        type: s.type
-    }));
-    
+
+    const displaySources = currentSourceImages;
+
     displaySources.forEach((source, index) => {
         const card = document.createElement('div');
         card.className = 'source-card';
@@ -534,30 +595,46 @@ function updateSources(sources, sourceImages) {
             let groundingHtml = '';
             let bboxOverlays = '';
             if (source.components && source.components.length > 0) {
-                const tags = source.components.slice(0, 4).map((c, i) => 
-                    `<span class="grounding-tag" data-bbox-index="${i}">${c.label || c.type || 'Component'}</span>`
-                ).join('');
-                groundingHtml = `<div class="source-grounding">${tags}</div>`;
-                
-                // Create bounding box overlays (using 0-1000 normalized coords)
-                // These will be drawn via CSS positioning
-                bboxOverlays = source.components.map((c, i) => {
-                    if (c.bbox_2d && c.bbox_2d.length === 4) {
-                        const [x1, y1, x2, y2] = c.bbox_2d;
-                        // Convert 0-1000 to percentage for CSS positioning
-                        const left = (x1 / 10);
-                        const top = (y1 / 10);
-                        const width = ((x2 - x1) / 10);
-                        const height = ((y2 - y1) / 10);
-                        const colors = ['#D4A574', '#6B8B6B', '#C17B7B', '#7B9BC1', '#B87BC1'];
-                        const color = colors[i % colors.length];
-                        return `<div class="bbox-overlay" data-bbox-index="${i}" 
-                            style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;border-color:${color};">
-                            <span class="bbox-label" style="background:${color}">${c.label || ''}</span>
-                        </div>`;
-                    }
-                    return '';
-                }).join('');
+                // Filter components by threshold
+                const visibleComponents = source.components.filter(c =>
+                    (c.relevance_score || 0) >= relevanceThreshold
+                );
+
+                if (visibleComponents.length > 0) {
+                    const tags = visibleComponents.slice(0, 4).map((c, i) => {
+                        const relevanceScore = c.relevance_score || 0;
+                        const relevancePercent = Math.round(relevanceScore * 100);
+                        return `<span class="grounding-tag" data-bbox-index="${i}" title="${relevancePercent}% relevant">${c.label || c.type || 'Component'}</span>`;
+                    }).join('');
+                    groundingHtml = `<div class="source-grounding">${tags}</div>`;
+
+                    // Create bounding box overlays with relevance-based styling
+                    bboxOverlays = visibleComponents.map((c, i) => {
+                        if (c.bbox_2d && c.bbox_2d.length === 4) {
+                            const [x1, y1, x2, y2] = c.bbox_2d;
+                            const relevanceScore = c.relevance_score || 0;
+                            const visualTier = getVisualTier(relevanceScore);
+
+                            // Convert 0-1000 to percentage for CSS positioning
+                            const left = (x1 / 10);
+                            const top = (y1 / 10);
+                            const width = ((x2 - x1) / 10);
+                            const height = ((y2 - y1) / 10);
+
+                            return `<div class="bbox-overlay" data-bbox-index="${i}" data-relevance="${relevanceScore.toFixed(2)}"
+                                style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;
+                                       border-color:${visualTier.color};border-width:${visualTier.border_width}px;
+                                       opacity:${visualTier.opacity};background-color:${visualTier.color}20;">
+                                <span class="bbox-label"
+                                      style="background:${visualTier.color};color:#1a1a1a;
+                                             font-size:${visualTier.font_size};font-weight:${visualTier.font_weight};">
+                                    ${c.label || ''}
+                                </span>
+                            </div>`;
+                        }
+                        return '';
+                    }).join('');
+                }
             }
             
             imageHtml = `
@@ -880,10 +957,52 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Update relevance threshold and re-render sources
+function updateRelevanceThreshold(newThreshold) {
+    relevanceThreshold = newThreshold;
+
+    // Update slider display
+    const thresholdSlider = document.getElementById('relevanceThreshold');
+    const thresholdValue = document.getElementById('thresholdValue');
+    if (thresholdSlider) thresholdSlider.value = Math.round(newThreshold * 100);
+    if (thresholdValue) thresholdValue.textContent = Math.round(newThreshold * 100);
+
+    // Re-render sources if they exist
+    if (currentSourceImages && currentSourceImages.length > 0) {
+        updateSources([], currentSourceImages);
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    // Load UX configuration
+    loadUXConfig();
+
     messageInput.focus();
-    
+
+    // Threshold slider control (if exists)
+    const thresholdSlider = document.getElementById('relevanceThreshold');
+    if (thresholdSlider) {
+        thresholdSlider.addEventListener('input', (e) => {
+            updateRelevanceThreshold(parseInt(e.target.value) / 100);
+        });
+    }
+
+    // Preset buttons (if exist)
+    const showAllBtn = document.getElementById('showAllBtn');
+    const showRelevantBtn = document.getElementById('showRelevantBtn');
+    const showHighlyRelevantBtn = document.getElementById('showHighlyRelevantBtn');
+
+    if (showAllBtn) {
+        showAllBtn.addEventListener('click', () => updateRelevanceThreshold(0));
+    }
+    if (showRelevantBtn) {
+        showRelevantBtn.addEventListener('click', () => updateRelevanceThreshold(0.25));
+    }
+    if (showHighlyRelevantBtn) {
+        showHighlyRelevantBtn.addEventListener('click', () => updateRelevanceThreshold(0.5));
+    }
+
     // Add event delegation for grounding tag hover interactions
     // When hovering a grounding tag, highlight the corresponding bounding box
     document.getElementById('sourcesList').addEventListener('mouseover', (e) => {

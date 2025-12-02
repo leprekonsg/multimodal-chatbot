@@ -141,6 +141,27 @@
             <div class="sources-header">
                 <h3 class="sources-title">Sources</h3>
                 <p class="sources-subtitle">Retrieved documents and images</p>
+
+                <!-- Relevance Threshold Controls -->
+                <div class="relevance-controls">
+                    <label class="relevance-label">
+                        Component Relevance ≥ <span id="thresholdValue">0</span>%
+                    </label>
+                    <input
+                        type="range"
+                        id="relevanceThreshold"
+                        class="relevance-slider"
+                        min="0"
+                        max="100"
+                        value="0"
+                        aria-label="Filter components by relevance threshold"
+                    />
+                    <div class="relevance-presets">
+                        <button id="showAllBtn" class="preset-btn" title="Show all components (0%)">All</button>
+                        <button id="showRelevantBtn" class="preset-btn" title="Show components ≥25% relevant">Relevant</button>
+                        <button id="showHighlyRelevantBtn" class="preset-btn" title="Show components ≥50% relevant">High</button>
+                    </div>
+                </div>
             </div>
             <div class="sources-list" id="sourcesList">
                 <div class="sources-empty">

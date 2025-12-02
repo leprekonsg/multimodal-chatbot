@@ -93,6 +93,47 @@ class UXConfig:
         "analyze", "compare", "reason", "why", "how come", "calculate"
     ])
 
+    # Component relevance display thresholds (4-tier visual hierarchy)
+    # These define the breakpoints for gradual opacity/styling
+    component_relevance_tiers: dict = field(default_factory=lambda: {
+        "highly_relevant": 0.75,    # Tier 1: 75-100% match
+        "relevant": 0.50,            # Tier 2: 50-74% match
+        "somewhat_relevant": 0.25,   # Tier 3: 25-49% match
+        "low_relevant": 0.0          # Tier 4: 0-24% match
+    })
+
+    # Visual styling for each tier (guidance for frontend)
+    component_visual_tiers: dict = field(default_factory=lambda: {
+        "highly_relevant": {
+            "opacity": 1.0,
+            "color": "#2563eb",    # Bright blue
+            "border_width": 3,
+            "font_size": "13px",
+            "font_weight": "700"
+        },
+        "relevant": {
+            "opacity": 0.9,
+            "color": "#3b82f6",    # Blue
+            "border_width": 2,
+            "font_size": "12px",
+            "font_weight": "600"
+        },
+        "somewhat_relevant": {
+            "opacity": 0.6,
+            "color": "#94a3b8",    # Gray-blue
+            "border_width": 1,
+            "font_size": "11px",
+            "font_weight": "400"
+        },
+        "low_relevant": {
+            "opacity": 0.3,
+            "color": "#9ca3af",    # Gray
+            "border_width": 1,
+            "font_size": "10px",
+            "font_weight": "300"
+        }
+    })
+
 @dataclass
 class EmbeddingConfig:
     dimension: int = 1024
