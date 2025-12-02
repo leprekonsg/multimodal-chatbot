@@ -382,20 +382,84 @@ class HybridRetrieverV2:
             query_intent=query_intent.value
         )
         print(f"[Retrieval] Generated embeddings: {list(query_embeddings.keys())}")
-        
+
+        # ===== PARALLEL SEARCH OPTIMIZATION =====
+        # Execute ALL search strategies concurrently (exact hash + vector searches)
+        # This eliminates blocking when exact hash fails (common case)
+
+        search_tasks = {}
+
         # Strategy 1: Exact match via perceptual hash (if image provided)
-        exact_results = []
         if "fingerprint" in query_embeddings:
-            exact_results = await self._exact_hash_search(
+            search_tasks["exact"] = self._exact_hash_search(
                 query_embeddings["fingerprint"],
                 limit=top_k,
                 filter=search_filter
             )
-        
-        # If we have high-confidence exact matches, return early
+
+        # Strategy 2: Visual search (if image query available)
+        if "image_query" in query_embeddings:
+            search_tasks["visual"] = self._vector_search(
+                vector=query_embeddings["image_query"],
+                vector_name=self.VECTOR_NAMES["image"],
+                limit=top_k * 2,
+                filter=search_filter
+            )
+
+        # Strategy 3: Text search (if text query available)
+        if "text_query" in query_embeddings:
+            search_tasks["textual"] = self._vector_search(
+                vector=query_embeddings["text_query"],
+                vector_name=self.VECTOR_NAMES["text"],
+                limit=top_k * 2,
+                filter=search_filter
+            )
+
+            # Strategy 3b: Sparse search
+            search_tasks["sparse"] = self._sparse_search(
+                query_text=query_text,
+                limit=top_k * 2,
+                filter=search_filter
+            )
+
+            # Strategy 3c: Combined dense for text queries
+            search_tasks["combined_text"] = self._vector_search(
+                vector=query_embeddings["text_query"],
+                vector_name=self.VECTOR_NAMES["combined"],
+                limit=top_k * 2,
+                filter=search_filter
+            )
+
+        # Strategy 4: Combined search (if multimodal query - uses combined embedding)
+        if "combined_query" in query_embeddings:
+            search_tasks["combined"] = self._vector_search(
+                vector=query_embeddings["combined_query"],
+                vector_name=self.VECTOR_NAMES["combined"],
+                limit=top_k * 2,
+                filter=search_filter
+            )
+
+        # Execute all searches in parallel
+        print(f"[Retrieval] Executing {len(search_tasks)} search strategies in parallel...")
+        search_results = await asyncio.gather(*search_tasks.values(), return_exceptions=True)
+
+        # Build results dict, handling exceptions
+        results_dict = {}
+        strategies_used = []
+        for strategy, result in zip(search_tasks.keys(), search_results):
+            if isinstance(result, Exception):
+                print(f"[!] Search strategy '{strategy}' failed: {result}")
+                continue
+            if result:
+                results_dict[strategy] = result
+                strategies_used.append(strategy)
+
+        # Check for high-confidence exact matches (early return optimization)
+        exact_results = results_dict.get("exact", [])
         if exact_results and exact_results[0][2] < 5:  # Hamming distance < 5
             docs = [self._to_document(r, match_type="exact") for r in exact_results[:top_k]]
-            
+            print(f"[Retrieval] Early return: Found exact match with distance < 5")
+
             return RetrievalResultV2(
                 documents=docs,
                 confidence=0.98,  # Very high confidence for exact match
@@ -404,81 +468,6 @@ class HybridRetrieverV2:
                 strategies_used=["exact_hash"],
                 retrieval_ms=(time.time() - start_time) * 1000
             )
-        
-        # Strategy 2-4: Vector searches in parallel
-        search_tasks = []
-        strategies_used = []
-        
-        # Visual search (if image query available)
-        if "image_query" in query_embeddings:
-            search_tasks.append(
-                self._vector_search(
-                    vector=query_embeddings["image_query"],
-                    vector_name=self.VECTOR_NAMES["image"],
-                    limit=top_k * 2,
-                    filter=search_filter
-                )
-            )
-            strategies_used.append("visual")
-        
-        # Text search (if text query available)
-        if "text_query" in query_embeddings:
-            search_tasks.append(
-                self._vector_search(
-                    vector=query_embeddings["text_query"],
-                    vector_name=self.VECTOR_NAMES["text"],
-                    limit=top_k * 2,
-                    filter=search_filter
-                )
-            )
-            strategies_used.append("textual")
-            
-            # Also sparse search
-            search_tasks.append(
-                self._sparse_search(
-                    query_text=query_text,
-                    limit=top_k * 2,
-                    filter=search_filter
-                )
-            )
-            strategies_used.append("sparse")
-            
-            # CRITICAL FIX: Also search combined_dense for text queries!
-            search_tasks.append(
-                self._vector_search(
-                    vector=query_embeddings["text_query"],
-                    vector_name=self.VECTOR_NAMES["combined"],
-                    limit=top_k * 2,
-                    filter=search_filter
-                )
-            )
-            strategies_used.append("combined_text")
-        
-        # Combined search (if multimodal query - uses combined embedding)
-        if "combined_query" in query_embeddings:
-            search_tasks.append(
-                self._vector_search(
-                    vector=query_embeddings["combined_query"],
-                    vector_name=self.VECTOR_NAMES["combined"],
-                    limit=top_k * 2,
-                    filter=search_filter
-                )
-            )
-            strategies_used.append("combined")
-        
-        # Execute all searches in parallel
-        search_results = await asyncio.gather(*search_tasks)
-        
-        # Build results dict for fusion
-        results_dict = {}
-        for strategy, results in zip(strategies_used, search_results):
-            if results:
-                results_dict[strategy] = results
-        
-        # Add exact results if any
-        if exact_results:
-            results_dict["exact"] = exact_results
-            strategies_used.insert(0, "exact")
         
         # Fuse results using weighted RRF
         fused = self._weighted_rrf(results_dict, query_intent)

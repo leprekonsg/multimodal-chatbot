@@ -364,7 +364,8 @@ class MultimodalChatbot:
             content=vlm_response.content,
             retrieval_result=retrieval_result,
             vlm_response=vlm_response,
-            latency_ms=latency_ms
+            latency_ms=latency_ms,
+            search_query=search_query  # Pass rewritten query for component filtering
         )
 
         # Add soft escalation offer if confidence is borderline
@@ -419,7 +420,11 @@ class MultimodalChatbot:
         # EARLY METADATA: Send immediately before streaming content
         # This synchronizes frontend state before any tokens arrive
         try:
-            source_images = self._format_source_images(retrieval_result.documents[:config.ux.max_sources_displayed])
+            # Pass query for relevant component filtering
+            source_images = self._format_source_images(
+                retrieval_result.documents[:config.ux.max_sources_displayed],
+                query_for_filtering=query
+            )
             sources = [
                 {
                     "id": doc.id,
@@ -560,7 +565,8 @@ class MultimodalChatbot:
         content: str,
         retrieval_result: RetrievalResultV2,
         vlm_response: VLMResponse,
-        latency_ms: float
+        latency_ms: float,
+        search_query: Optional[str] = None
     ) -> ChatResponse:
         """Build complete response with citations."""
         # Build source list
@@ -576,7 +582,11 @@ class MultimodalChatbot:
             ))
 
         # Collect image sources for display with visual grounding data
-        source_images = self._format_source_images(retrieval_result.documents[:config.ux.max_sources_displayed])
+        # Pass rewritten query for relevant component filtering
+        source_images = self._format_source_images(
+            retrieval_result.documents[:config.ux.max_sources_displayed],
+            query_for_filtering=search_query
+        )
         
         # Don't append sources to message - they're shown in the sidebar
         # This avoids the duplicate/broken markdown link issue
@@ -592,8 +602,122 @@ class MultimodalChatbot:
             source_images=source_images
         )
     
-    def _format_source_images(self, documents: List[RetrievedDocumentV2]) -> List[Dict[str, Any]]:
-        """Format source images with visual grounding data for frontend display."""
+    def _filter_relevant_components(
+        self,
+        components: List[Dict[str, Any]],
+        query: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Score components based on query relevance using substring containment.
+
+        Returns ALL components with relevance_score field for frontend opacity control.
+
+        Args:
+            components: List of component dicts with 'label' and 'bbox_2d'
+            query: The query string (preferably rewritten for pronoun resolution)
+
+        Returns:
+            All components with 'relevance_score' field (0.0-1.0)
+
+        Implementation:
+        - Uses substring containment (naturally handles compound words)
+        - "tie" matches "tiedown" without noisy 3-char substrings
+        - Returns ALL components with scores (frontend controls display)
+        - Logs high-relevance matches for debugging
+        """
+        import re
+
+        if not components or not query:
+            # Return all with default low score
+            for comp in components:
+                comp['relevance_score'] = 0.2
+            return components
+
+        # Only apply scoring if we have many components
+        if len(components) <= 10:
+            for comp in components:
+                comp['relevance_score'] = 0.5  # Medium score for small sets
+            return components
+
+        # Stopwords list (common English words to ignore)
+        stopwords = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'be',
+            'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+            'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this',
+            'that', 'these', 'those', 'what', 'which', 'where', 'when', 'who',
+            'how', 'why', 'it', 'its', 'their', 'them', 'please', 'show', 'me',
+            'find', 'locate', 'i', 'you', 'we'
+        }
+
+        # Tokenize query - keep only meaningful tokens
+        query_lower = query.lower()
+
+        # Handle hyphenated/compound patterns
+        query_lower = re.sub(r'[-_]', ' ', query_lower)
+
+        # Extract tokens
+        query_tokens = set(re.findall(r'[a-z0-9]+', query_lower))
+
+        # Remove short tokens and stopwords
+        query_tokens = {
+            token for token in query_tokens
+            if token not in stopwords and len(token) >= 3
+        }
+
+        if not query_tokens:
+            # No meaningful tokens - score everything low
+            for comp in components:
+                comp['relevance_score'] = 0.2
+            return components
+
+        # Score each component using substring containment
+        for comp in components:
+            label = comp.get('label', '').lower()
+            if not label:
+                comp['relevance_score'] = 0.0
+                continue
+
+            # Handle hyphenated labels too
+            label = re.sub(r'[-_]', ' ', label)
+
+            # Check for substring matches (handles compounds naturally)
+            # "tie" in "tiedown" works, but "tie" not in "specified"
+            matches = 0
+            for token in query_tokens:
+                if token in label:
+                    matches += 1
+
+            # Calculate relevance as fraction of query tokens matched
+            comp['relevance_score'] = matches / len(query_tokens) if query_tokens else 0.0
+
+        # Log results for debugging
+        high_relevance = [c for c in components if c['relevance_score'] > 0.25]
+        print(f"[Component Filter] {len(high_relevance)}/{len(components)} components with score > 0.25")
+
+        # Show top matches for debugging
+        if high_relevance:
+            print(f"[Component Filter] Top matches:")
+            for comp in sorted(high_relevance, key=lambda x: x['relevance_score'], reverse=True)[:3]:
+                print(f"  - {comp.get('label', 'unnamed')[:50]}: {comp['relevance_score']:.2f}")
+
+        return components
+
+    def _format_source_images(
+        self,
+        documents: List[RetrievedDocumentV2],
+        query_for_filtering: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Format source images with visual grounding data for frontend display.
+
+        Args:
+            documents: Retrieved documents to format
+            query_for_filtering: Optional query string to filter components by relevance
+
+        Returns:
+            List of formatted source image dicts with filtered components
+        """
         source_images = []
 
         for doc in documents:
@@ -603,11 +727,15 @@ class MultimodalChatbot:
                 if doc.metadata:
                     components = doc.metadata.get("components", [])
 
+                # Apply relevance filtering if query provided
+                if query_for_filtering:
+                    components = self._filter_relevant_components(components, query_for_filtering)
+
                 source_images.append({
                     "url": doc.url,
                     "title": doc.source_display,
                     "caption": doc.caption[:200] if doc.caption else "",
-                    "components": components,  # Visual grounding data
+                    "components": components,  # Scored visual grounding data (with relevance_score)
                     "match_type": doc.match_type,
                     "score": doc.score
                 })
