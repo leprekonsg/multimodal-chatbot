@@ -508,20 +508,24 @@ Rules:
         page_number: int = None
     ) -> str:
         """
-        Generate contextual retrieval prefix.
-        
+        Generate enriched contextual retrieval prefix.
+
         Research: Anthropic's contextual retrieval shows 67% error reduction
         by prepending chunk-specific context before embedding.
+
+        Enhanced to include component names for semantic label search,
+        enabling text_dense embeddings to match component-based queries
+        without requiring a separate lightweight model.
         """
         parts = []
-        
+
         # Source identification
         if filename:
             source = filename.replace("_", " ").replace("-", " ")
             if page_number:
                 source += f", Page {page_number}"
             parts.append(f"[Source: {source}]")
-        
+
         # Document type
         doc_type = structured.get("document_type", "").lower()
         if doc_type and doc_type != "other":
@@ -534,12 +538,25 @@ Rules:
                 "photo": "Photograph"
             }
             parts.append(f"[Type: {type_labels.get(doc_type, doc_type.title())}]")
-        
+
         # Key topics
         topics = structured.get("key_topics", [])
         if topics:
             parts.append(f"[Topics: {', '.join(topics[:3])}]")
-        
+
+        # Component names (CRITICAL for semantic label search)
+        # This enables queries like "find pressure valve" to match via text_dense embeddings
+        components = structured.get("components", [])
+        if components:
+            # Extract unique component labels, limit to first 10 to avoid token bloat
+            component_labels = [
+                comp.get("label", comp.get("name", "")).strip()
+                for comp in components[:10]
+                if comp.get("label") or comp.get("name")
+            ]
+            if component_labels:
+                parts.append(f"[Components: {', '.join(component_labels)}]")
+
         return " ".join(parts) + " " if parts else ""
 
     async def visual_grounding(

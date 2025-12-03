@@ -102,10 +102,10 @@ function populateEmptyState() {
     ];
 
     const defaultSuggestions = [
-        'What are the main features?',
-        'Show me recent updates',
-        'Help me get started',
-        'Tell me about capabilities'
+        'How do I troubleshoot errors?',
+        'Show me installation instructions',
+        'Find maintenance procedures',
+        'Search for safety guidelines'
     ];
 
     // Populate capability pills
@@ -510,12 +510,7 @@ function startNewChat() {
     messagesContainer.innerHTML = `
         <div class="empty-state" id="emptyState">
             <div class="aeris-avatar">
-                <div class="avatar-glow"></div>
-                <div class="avatar-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                    </svg>
-                </div>
+                <div class="avatar-icon"></div>
             </div>
             <h2 class="empty-title">Hi! I'm Aeris, your knowledge assistant</h2>
             <p class="empty-subtitle">

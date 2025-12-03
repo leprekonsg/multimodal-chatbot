@@ -61,14 +61,17 @@ Unlike standard RAG which stores one vector per document, this system stores **t
 | Vector Name | Model | Dimension | Purpose |
 | :--- | :--- | :--- | :--- |
 | `image_dense` | Voyage Multimodal-3 | 1024 | Pure visual similarity search. |
-| `text_dense` | Voyage Multimodal-3 | 1024 | Semantic search on captions/OCR. |
+| `text_dense` | Voyage Multimodal-3 | 1024 | Semantic search on captions/OCR + component names for label matching. |
 | `combined_dense` | Voyage Multimodal-3 | 1024 | Fused multimodal representation. |
 | `sparse` | Custom BM25 | Dynamic | Keyword/Part-number exact matching. |
 
 ### 3.2 Contextual Enrichment & Grounding
 Before embedding, images undergo **Structured Captioning** via `Qwen3-VL-Flash`.
 1.  **Component Detection:** Extracts bounding boxes (`bbox_2d`) for key elements (valves, buttons).
-2.  **Contextual Prefixing:** Prepends metadata (Source, Page, Type) to the text chunk to resolve ambiguity (Anthropic Contextual Retrieval technique).
+2.  **Contextual Prefixing:** Prepends metadata to the text chunk to resolve ambiguity (Anthropic Contextual Retrieval technique).
+    - Format: `[Source: filename, Page X] [Type: diagram] [Topics: topic1, topic2] [Components: Valve A, Gauge B, Line C] {description}`
+    - Component names are embedded in `text_dense` vector, enabling semantic label search (e.g., "find pressure valve").
+    - Limits: 10 components, 3 topics to prevent token bloat (~80-100 tokens for prefix).
 3.  **Perceptual Hashing:** Computes pHash/dHash for O(1) exact duplicate detection.
 
 ### 3.3 Ingestion Flow
@@ -279,7 +282,56 @@ The vector database schema is designed for flexibility and speed.
 
 ---
 
-## 9. Infrastructure & Scalability
+## 9. Frontend & User Interface
+
+The web interface implements an authentic NES/SNES-era Final Fantasy aesthetic with pixel-perfect styling and stepped animations.
+
+### 9.1 Design System
+**Typography:**
+*   **Headers/Buttons:** Press Start 2P (8-bit pixel font)
+*   **Body/Dialog:** VT323 (terminal-style pixel font)
+
+**Color Palette (FF Kingdom Blue):**
+*   **Backgrounds:** Deep blues (#0C1445, #1a237e, #0d1b4a)
+*   **Accents:** Gold (#FFD54F, #FFEB3B) for selections and highlights
+*   **Status:** HP green (#66BB6A), MP blue (#42A5F5), danger red (#EF5350)
+*   **Borders:** Layered pixel borders (#5C6BC0, #3949AB, #0a0a1a)
+
+### 9.2 Pixel-Perfect Rendering
+*   **Sharp Corners:** Zero border-radius; all elements use straight edges or clip-path polygons
+*   **Image Rendering:** Global `image-rendering: pixelated` enforced
+*   **Scanlines:** CRT effect via repeating linear gradient overlay (4px intervals)
+*   **Shadows:** Offset pixel shadows (3-6px) instead of blur for 8-bit depth effect
+
+### 9.3 Animation Strategy
+All animations use `steps()` timing function for authentic 8-bit movement:
+*   **Message appearance:** 4 steps
+*   **Avatar floating:** 6 steps (8px vertical range)
+*   **Confidence bars:** 10-step fill animation
+*   **Button presses:** Instant pixel shift (2px translate), no easing
+
+### 9.4 Component Architecture
+**Dialog Boxes:** Multi-layer border system mimicking FF text boxes:
+```css
+border: 3px solid outer-color;
+box-shadow: inset 0 0 0 2px inner-color,
+            inset 0 0 0 6px accent-color,
+            6px 6px 0 shadow-color;
+```
+
+**Stat Bars:** HP/MP-style bars with stepped fill transitions and 2px pixel borders
+**Avatars:** Pixelated emoji sprites (👩) with contrast/saturation filters for retro color grading
+**Suggestions:** FF menu-item style with gold text, thick borders, and pixel shadows
+
+### 9.5 Technical Implementation
+*   **Framework:** Vanilla JavaScript (no framework dependencies)
+*   **Streaming:** SSE for real-time chat responses with typewriter cursor animation
+*   **State Management:** Client-side conversation tracking with turn counter
+*   **Responsive:** 2-column grid (1024px breakpoint) with mobile sidebar toggle
+
+---
+
+## 10. Infrastructure & Scalability
 
 *   **Conversation State:** In-memory Dict for development; Redis recommended for production multi-instance deployment.
 *   **Async I/O:** All external calls (Voyage, Qwen, Qdrant, S3) are non-blocking `async/await`.

@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aeris - Your Knowledge Assistant</title>
     
-    <!-- Distinctive typography: Crimson Pro + IBM Plex Mono -->
+    <!-- FF 8-bit pixel fonts: Press Start 2P + VT323 -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
     
     <!-- Styles -->
     <link rel="stylesheet" href="css/shared.css">
@@ -19,7 +19,7 @@
         <!-- Header -->
         <header class="header">
             <div class="logo">
-                <img src="images/Gemini_Generated_Image_cwxr3ycwxr3ycwxr.png" alt="Aeris Logo" class="logo-image">
+                <img src="images/aeris.jpg" alt="Aeris Logo" class="logo-image">
             </div>
             <div class="header-actions">
                 <button class="btn-new-chat" onclick="startNewChat()" title="Start fresh conversation (Cmd+Shift+N)" aria-label="Start a new conversation, clearing current context">
@@ -64,14 +64,9 @@
 
             <div class="messages" id="messages">
                 <div class="empty-state" id="emptyState">
-                    <!-- Animated Aeris Avatar -->
+                    <!-- Animated Aeris Avatar - 8-bit Sprite -->
                     <div class="aeris-avatar">
-                        <div class="avatar-glow"></div>
-                        <div class="avatar-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                            </svg>
-                        </div>
+                        <div class="avatar-icon"></div>
                     </div>
                     <h2 class="empty-title">Hi! I'm Aeris, your knowledge assistant</h2>
                     <p class="empty-subtitle">
