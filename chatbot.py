@@ -11,11 +11,12 @@ from datetime import datetime
 import uuid
 
 from config import config
-from retrieval import enhanced_retriever, RetrievalResultV2, RetrievedDocumentV2
+from retrieval import enhanced_retriever, RetrievalResultV2, RetrievedDocumentV2, QueryIntent
 from llm_client import qwen_client, VLMResponse
 from escalation import escalation_engine, EscalationDecision, ConversationContext, EscalationReason
 from handoff import handoff_manager, HandoffResult
 from storage import storage
+from component_scorer_simple import get_component_scorer, QueryIntent as ScorerQueryIntent
 
 
 @dataclass
@@ -420,10 +421,11 @@ class MultimodalChatbot:
         # EARLY METADATA: Send immediately before streaming content
         # This synchronizes frontend state before any tokens arrive
         try:
-            # Pass query for relevant component filtering
+            # Pass query for relevant component filtering with intent-aware scoring
             source_images = self._format_source_images(
                 retrieval_result.documents[:config.ux.max_sources_displayed],
-                query_for_filtering=query
+                query_for_filtering=query,
+                query_intent=retrieval_result.query_intent
             )
             sources = [
                 {
@@ -582,10 +584,11 @@ class MultimodalChatbot:
             ))
 
         # Collect image sources for display with visual grounding data
-        # Pass rewritten query for relevant component filtering
+        # Pass rewritten query for relevant component filtering with intent-aware scoring
         source_images = self._format_source_images(
             retrieval_result.documents[:config.ux.max_sources_displayed],
-            query_for_filtering=search_query
+            query_for_filtering=search_query,
+            query_intent=retrieval_result.query_intent
         )
         
         # Don't append sources to message - they're shown in the sidebar
@@ -605,108 +608,55 @@ class MultimodalChatbot:
     def _filter_relevant_components(
         self,
         components: List[Dict[str, Any]],
-        query: str
+        query: str,
+        query_intent: Optional[QueryIntent] = None
     ) -> List[Dict[str, Any]]:
         """
-        Score components based on query relevance using substring containment.
+        Score components using advanced ComponentScorer with multi-strategy matching.
+
+        UPGRADED from simple substring matching to:
+        - Exact matching for precision
+        - N-gram similarity for compound words ("tie down" vs "tiedown")
+        - Token overlap for general matching
+        - Intent-aware thresholds for adaptive behavior
 
         Returns ALL components with relevance_score field for frontend opacity control.
 
         Args:
             components: List of component dicts with 'label' and 'bbox_2d'
             query: The query string (preferably rewritten for pronoun resolution)
+            query_intent: Optional query intent for adaptive scoring
 
         Returns:
             All components with 'relevance_score' field (0.0-1.0)
 
         Implementation:
-        - Uses substring containment (naturally handles compound words)
-        - "tie" matches "tiedown" without noisy 3-char substrings
+        - Uses ComponentScorer with multiple strategies
+        - Handles compound words via character n-grams
+        - Adapts to query intent (visual vs exact match)
         - Returns ALL components with scores (frontend controls display)
-        - Logs high-relevance matches for debugging
         """
-        import re
+        # Map retrieval.QueryIntent to component_scorer.QueryIntent
+        scorer_intent = ScorerQueryIntent.GENERAL
+        if query_intent:
+            intent_map = {
+                QueryIntent.VISUAL_SEARCH: ScorerQueryIntent.VISUAL_SEARCH,
+                QueryIntent.TEXTUAL_SEARCH: ScorerQueryIntent.TEXTUAL_SEARCH,
+                QueryIntent.MULTIMODAL: ScorerQueryIntent.MULTIMODAL,
+                QueryIntent.EXACT_MATCH: ScorerQueryIntent.EXACT_MATCH,
+                QueryIntent.SIMILARITY: ScorerQueryIntent.SIMILARITY,
+            }
+            scorer_intent = intent_map.get(query_intent, ScorerQueryIntent.GENERAL)
 
-        if not components or not query:
-            # Return all with default low score
-            for comp in components:
-                comp['relevance_score'] = 0.2
-            return components
-
-        # Only apply scoring if we have many components
-        if len(components) <= 10:
-            for comp in components:
-                comp['relevance_score'] = 0.5  # Medium score for small sets
-            return components
-
-        # Stopwords list (common English words to ignore)
-        stopwords = {
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-            'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'be',
-            'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
-            'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this',
-            'that', 'these', 'those', 'what', 'which', 'where', 'when', 'who',
-            'how', 'why', 'it', 'its', 'their', 'them', 'please', 'show', 'me',
-            'find', 'locate', 'i', 'you', 'we'
-        }
-
-        # Tokenize query - keep only meaningful tokens
-        query_lower = query.lower()
-
-        # Handle hyphenated/compound patterns
-        query_lower = re.sub(r'[-_]', ' ', query_lower)
-
-        # Extract tokens
-        query_tokens = set(re.findall(r'[a-z0-9]+', query_lower))
-
-        # Remove short tokens and stopwords
-        query_tokens = {
-            token for token in query_tokens
-            if token not in stopwords and len(token) >= 3
-        }
-
-        if not query_tokens:
-            # No meaningful tokens - score everything low
-            for comp in components:
-                comp['relevance_score'] = 0.2
-            return components
-
-        # Score each component using substring containment
-        for comp in components:
-            label = comp.get('label', '').lower()
-            if not label:
-                comp['relevance_score'] = 0.0
-                continue
-
-            # Handle hyphenated labels too
-            label = re.sub(r'[-_]', ' ', label)
-
-            # Check for substring matches (handles compounds naturally)
-            # "tie" in "tiedown" works, but "tie" not in "specified"
-            matches = 0
-            for token in query_tokens:
-                if token in label:
-                    matches += 1
-
-            # Calculate relevance as fraction of query tokens matched
-            comp['relevance_score'] = matches / len(query_tokens) if query_tokens else 0.0
-
-        # Log results for debugging
-        high_relevance = [c for c in components if c['relevance_score'] > 0.25]
-        print(f"[Component Filter] {len(high_relevance)}/{len(components)} components with score > 0.25")
-
-        # Show top matches for debugging
-        if high_relevance:
-            print(f"[Component Filter] Top matches:")
-            for comp in sorted(high_relevance, key=lambda x: x['relevance_score'], reverse=True)[:3]:
-                print(f"  - {comp.get('label', 'unnamed')[:50]}: {comp['relevance_score']:.2f}")
-
-        return components
+        # Use ComponentScorer for advanced matching
+        scorer = get_component_scorer()
+        return scorer.score_components(components, query, scorer_intent)
 
     def _format_source_images(
         self,
         documents: List[RetrievedDocumentV2],
-        query_for_filtering: Optional[str] = None
+        query_for_filtering: Optional[str] = None,
+        query_intent: Optional[QueryIntent] = None
     ) -> List[Dict[str, Any]]:
         """
         Format source images with visual grounding data for frontend display.
@@ -714,6 +664,7 @@ class MultimodalChatbot:
         Args:
             documents: Retrieved documents to format
             query_for_filtering: Optional query string to filter components by relevance
+            query_intent: Optional query intent for adaptive component scoring
 
         Returns:
             List of formatted source image dicts with filtered components
@@ -729,7 +680,11 @@ class MultimodalChatbot:
 
                 # Apply relevance filtering if query provided
                 if query_for_filtering:
-                    components = self._filter_relevant_components(components, query_for_filtering)
+                    components = self._filter_relevant_components(
+                        components,
+                        query_for_filtering,
+                        query_intent
+                    )
 
                 source_images.append({
                     "url": doc.url,
