@@ -843,7 +843,10 @@ Instructions:
     ) -> AsyncGenerator[str, None]:
         """Stream response tokens."""
         content = []
-        
+        num_user_images = 0
+        num_kb_images = 0
+
+        # Add USER's image FIRST (what they're asking about)
         if user_image_url:
             final_user_url = self._process_image_url(user_image_url)
             if final_user_url:
@@ -851,7 +854,9 @@ Instructions:
                     "type": "image_url",
                     "image_url": {"url": final_user_url}
                 })
-        
+                num_user_images += 1
+
+        # Add knowledge base images (sources/context)
         if image_urls:
             for url in image_urls[:5]:
                 final_url = self._process_image_url(url)
@@ -860,16 +865,31 @@ Instructions:
                         "type": "image_url",
                         "image_url": {"url": final_url}
                     })
-        
-        user_prompt = f"""Based on the following context, answer the question.
+                    num_kb_images += 1
 
+        # Build image guidance
+        image_guidance = ""
+        if num_user_images > 0 and num_kb_images > 0:
+            image_guidance = f"""
+IMAGE GUIDANCE:
+- The FIRST image is what THE USER UPLOADED and is asking about
+- The remaining {num_kb_images} images are from the KNOWLEDGE BASE (reference sources)
+- "this image" or "the image" refers to the user's uploaded image
+"""
+        elif num_user_images > 0:
+            image_guidance = """
+IMAGE GUIDANCE: The image above is what THE USER UPLOADED and is asking about.
+"""
+
+        user_prompt = f"""Based on the following context, answer the question.
+{image_guidance}
 CONTEXT:
 {context}
 
 QUESTION: {query}
 
-Answer based on the context. If information is missing, clearly state that."""
-        
+Answer based on the context. If the user uploaded an image, "this image" refers to their upload."""
+
         content.append({"type": "text", "text": user_prompt})
         
         if enable_thinking is None:
@@ -1020,7 +1040,23 @@ Rewrite the query to be standalone. Return ONLY the rewritten query."""
         # Build current user message with all context
         current_content = []
 
-        # 1. Add retrieved images FIRST (from knowledge base)
+        # Track image counts for prompt clarity
+        num_user_images = 0
+        num_kb_images = 0
+
+        # 1. Add USER'S uploaded images FIRST (what they're asking about)
+        # This is critical: when user says "this image", they mean THEIR uploaded image
+        if user_uploaded_images:
+            for url in user_uploaded_images:
+                final_url = self._process_image_url(url)
+                if final_url:
+                    current_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": final_url}
+                    })
+                    num_user_images += 1
+
+        # 2. Add retrieved images from knowledge base (sources/context)
         # Note: Caller (chatbot.py) already limits to max_kb_images (3)
         if retrieved_image_urls:
             for url in retrieved_image_urls:
@@ -1030,30 +1066,38 @@ Rewrite the query to be standalone. Return ONLY the rewritten query."""
                         "type": "image_url",
                         "image_url": {"url": final_url}
                     })
+                    num_kb_images += 1
 
-        # 2. Add user's uploaded images (within retention window)
-        # User Requirement: Pass image for next 2-3 turns only
-        if user_uploaded_images:
-            for url in user_uploaded_images:
-                final_url = self._process_image_url(url)
-                if final_url:
-                    current_content.append({
-                        "type": "image_url",
-                        "image_url": {"url": final_url}
-                    })
+        # 3. Build prompt that clearly distinguishes image sources
+        image_guidance = ""
+        if num_user_images > 0 and num_kb_images > 0:
+            image_guidance = f"""
+IMAGE GUIDANCE:
+- The FIRST {num_user_images} image(s) above are what THE USER UPLOADED and is asking about
+- The remaining {num_kb_images} image(s) are from the KNOWLEDGE BASE (retrieved sources to help answer)
+- When the user says "this image", "the image", or "my image" - they mean their uploaded image(s)
+- Use the knowledge base images as reference material to provide accurate information
+"""
+        elif num_user_images > 0:
+            image_guidance = f"""
+IMAGE GUIDANCE:
+- The {num_user_images} image(s) above are what THE USER UPLOADED and is asking about
+- When the user says "this image" or "the image" - they mean their uploaded image
+"""
 
-        # 3. Add text prompt with knowledge base context
+        # 4. Add text prompt with knowledge base context
         user_prompt = f"""Based on the following knowledge base context and images, answer my question.
-
+{image_guidance}
 KNOWLEDGE BASE CONTEXT:
 {context}
 
 MY QUESTION: {current_query}
 
 Remember to:
-- Use the context and images above
+- If the user uploaded an image, that's what "this image" refers to - describe or explain IT
+- Use knowledge base context/images as reference sources to provide accurate information
 - Reference which sources you're using
-- If the answer isn't in the context, tell me clearly
+- If information is missing from the knowledge base, tell me clearly
 - Consider our conversation history for context (pronouns, references)"""
 
         current_content.append({"type": "text", "text": user_prompt})

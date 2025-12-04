@@ -1,120 +1,137 @@
-# Multimodal RAG Chatbot (v2)
+# Multimodal RAG Chatbot
 
-A production-grade RAG system using **Voyage Multimodal-3** for SOTA embeddings and **Qwen3-VL** for vision-language reasoning. Designed for high accuracy with charts, diagrams, and document screenshots without local GPU requirements.
+Production-grade RAG system using **Voyage Multimodal-3** embeddings and **Qwen3-VL** vision-language models for technical documents, diagrams, and schematics. Zero GPU requirements.
 
-## ⚡ Key Features
+## Key Features
 
-*   **Multimodal Embeddings:** Uses Voyage Multimodal-3 (1024-dim) for unified text-image vector space.
-*   **Multi-Vector Storage:** Stores 3 vectors per document (Visual-only, Text-only, Combined) + Sparse (BM25) for robust retrieval.
-*   **Hybrid Search:** Reciprocal Rank Fusion (RRF) combines dense, sparse, and perceptual hash results.
-*   **Zero-GPU Inference:** Fully API-based architecture (Voyage AI + Alibaba Cloud), runnable on standard CPUs.
-*   **Intelligent Escalation:** Detects low confidence, negative sentiment, or explicit requests to trigger human handoff.
-*   **Streaming & Async:** Full async pipeline with Server-Sent Events (SSE) for chat streaming.
+*   **Multi-Vector Retrieval:** 3 dense vectors (image/text/combined) + sparse (BM25) + perceptual hash per document
+*   **Query-Side Enrichment:** Captions user images with Qwen3-VL-235B before embedding for semantic matching
+*   **Hybrid Search:** Weighted RRF fusion with Voyage Rerank-2 cross-encoder (graceful fallback)
+*   **Visual Grounding:** Bounding box detection (0-1000 coords) with relevance scoring and toggle UI
+*   **Multi-Turn Context:** 3-turn image retention, pronoun-aware query rewriting, 28k token budget
+*   **Carousel Navigation:** Multi-image modal with thumbnails, keyboard shortcuts, and 8-bit FF aesthetic
+*   **Zero-GPU:** API-based (Voyage AI + Alibaba Cloud), runs on standard CPUs
+*   **Streaming SSE:** Async pipeline with early metadata for responsive UX
 
-## 🏗️ Architecture
+## Architecture
 
-```mermaid
-graph TD
-    User[User Input] --> Router{Type?}
-    Router -->|Image| Hash[Perceptual Hash]
-    Router -->|Text/Image| Embed[Voyage Multimodal-3]
-    
-    subgraph Retrieval [Hybrid Retrieval]
-        Hash -->|Exact Match| Qdrant
-        Embed -->|Dense Search| Qdrant
-        BM25[Sparse Encoder] -->|Keyword Search| Qdrant
-    end
-    
-    Qdrant --> RRF[Reciprocal Rank Fusion]
-    RRF --> Context[Context Window]
-    
-    Context --> LLM[Qwen3-VL-Plus]
-    LLM --> Response
-    
-    LLM -.->|Low Confidence| Escalation[Handoff Protocol]
+```
+Ingestion: File → Qwen Caption+BBox → Voyage Multi-Vector → Qdrant
+Retrieval: Query → [Enrichment?] → Hybrid Search → RRF → Reranker → Top-K
+Generation: User Images + KB Images + Context → Qwen3-VL-Plus → Streamed Response
 ```
 
-## 🚀 Quick Start
+**Stack:** FastAPI (AsyncIO), Qdrant (vector DB), Voyage AI (embeddings), Qwen3-VL (VLM)
 
-### 1. Prerequisites
+## Quick Start
+
+### Prerequisites
 *   Python 3.10+
 *   Docker (for Qdrant)
-*   API Keys: Voyage AI, Alibaba Cloud (DashScope)
+*   API Keys: [Voyage AI](https://www.voyageai.com/), [Alibaba Cloud DashScope](https://dashscope.aliyun.com/)
 
-### 2. Installation
+### Installation
 
 ```bash
-# Clone and setup env
-git clone <repo_url>
-cd multimodal-rag-chatbot
+# Setup environment
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install lightweight dependencies (No Torch/Transformers required)
 pip install -r requirements.txt
 ```
 
-### 3. Configuration
-Create a `.env` file:
+### Configuration
+Create `.env`:
 
 ```ini
-# Required
-VOYAGE_API_KEY=voyage-key-here
-DASHSCOPE_API_KEY=sk-qwen-key-here
-
-# Optional (Defaults shown)
-QDRANT_URL=http://localhost:6333
-STORAGE_PROVIDER=local
-VERBOSE_USAGE=1
+VOYAGE_API_KEY=your-voyage-key
+DASHSCOPE_API_KEY=sk-your-qwen-key
+QDRANT_URL=http://localhost:6333  # Optional
+STORAGE_PROVIDER=local             # Optional: local|s3
 ```
 
-### 4. Run
+### Run
 
 ```bash
-# Start Vector DB
-docker run -d -p 6333:6333 qdrant/qdrant
-
-# Start Server
-python server.py
+docker run -d -p 6333:6333 qdrant/qdrant  # Start Qdrant
+python server.py                          # Start server
 ```
 
-Access the **Knowledge Console** at `http://localhost:8000`.
+Access at `http://localhost:8000`
 
-## 🧠 Technical Implementation
+## Technical Details
 
-### Ingestion Pipeline (`ingestion.py`)
-The system employs a **Multi-Vector Strategy** to solve modality asymmetry:
-1.  **Image-Dense:** Encodes pure visual features.
-2.  **Text-Dense:** Encodes caption and extracted text.
-3.  **Combined-Dense:** Fuses visual and textual semantics.
-4.  **Sparse:** BM25 vector for keyword precision.
-5.  **Fingerprint:** Perceptual hash (pHash/dHash) for exact duplicate detection.
+### Multi-Vector Storage
+Each document stores 4 vectors in Qdrant:
+- **image_dense** (1024d): Pure visual features
+- **text_dense** (1024d): Caption + OCR + component names
+- **combined_dense** (1024d): Fused multimodal representation
+- **sparse** (BM25): Keyword/part number matching
 
-### Retrieval Logic (`retrieval.py`)
-Queries are classified into intents (`VISUAL`, `TEXTUAL`, `EXACT`) to weight strategies dynamically:
-*   **Text Queries:** Search `text_dense` + `combined_dense` + `sparse`.
-*   **Image Queries:** Search `image_dense` + `combined_dense` + `fingerprint`.
-*   **Confidence:** Calculated using calibrated cosine similarity thresholds, not raw RRF scores.
+### Query Enrichment
+Generic image queries trigger caption generation:
+- Detects: short query (< 20 words) + vague terms ("this", "that")
+- Uses: Qwen3-VL-235B-Instruct (235B params) for accuracy
+- Appends: `{query}\n\n[Image shows: {caption}]`
+- Impact: +40-60% confidence for generic queries
 
-### Models Used
-| Component | Model | Provider | Cost (Est) |
-|-----------|-------|----------|------------|
-| **Embedding** | `voyage-multimodal-3` | Voyage AI | $0.12 / 1M tokens |
-| **Generation** | `qwen3-vl-plus` | Alibaba Cloud | ~$4.00 / 1M tokens |
-| **Captioning** | `qwen3-vl-flash` | Alibaba Cloud | Free (limited) |
+### Models
+| Component | Model | Provider |
+|-----------|-------|----------|
+| Embedding | voyage-multimodal-3 (1024d) | Voyage AI |
+| Generation | qwen3-vl-plus (32k context) | Alibaba Cloud |
+| Query Caption | qwen3-vl-235b-instruct | Alibaba Cloud |
+| Ingestion Caption | qwen3-vl-flash | Alibaba Cloud |
+| Reranking | voyage-rerank-2 | Voyage AI |
 
-## 📡 API Reference
+## API Endpoints
 
-| Endpoint | Method | Payload | Description |
-|----------|--------|---------|-------------|
-| `/chat` | POST | `{message, conversation_id}` | Text-only chat |
-| `/chat/multimodal` | POST | `Multipart Form` | Chat with image upload |
-| `/ingest/file` | POST | `Multipart Form` | Ingest PDF/Images (Streaming NDJSON) |
-| `/search` | POST | `{query, top_k}` | Debug retrieval results |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/chat/multimodal` | POST | Chat with optional image (multipart form) |
+| `/ingest/file` | POST | Ingest PDF/images (streaming NDJSON) |
+| `/search` | POST | Debug retrieval with `{query, top_k}` |
+| `/visual-grounding` | POST | Locate elements via bbox coordinates |
+| `/ux/config` | GET | Get UI configuration |
 
-## 🛡️ Escalation Logic
-The system hands off to human agents (Webhook/Slack) if:
-1.  **Explicit Request:** "Talk to human".
-2.  **Low Confidence:** Retrieval score < 0.5.
-3.  **Negative Sentiment:** User frustration detected (< -0.6).
-4.  **Repeated Failures:** 2+ consecutive fallback responses.
+## UI Features
+
+### 8-Bit Final Fantasy Theme
+- **Fonts:** Press Start 2P (headers), VT323 (body)
+- **Colors:** Deep blue (#0C1445) + gold (#FFD54F) accents
+- **Animations:** Stepped timing (no easing) for authentic 8-bit feel
+- **Scanlines:** CRT effect overlay
+
+### Multi-Image Carousel
+- **Navigation:** Arrow buttons, thumbnails, keyboard (← → or 1-9)
+- **Bounding Boxes:** Toggle visibility, positioned outside boxes
+- **Relevance:** Opacity scales with component relevance scores
+
+### Conversation Features
+- **Image Retention:** 3-turn window for context
+- **Query Rewriting:** Auto-resolves pronouns using conversation history
+- **Token Budget:** 28k limit with auto-pruning
+
+## Project Structure
+
+```
+├── server.py              # FastAPI server + endpoints
+├── chatbot.py             # Orchestration layer
+├── retrieval.py           # Hybrid search + RRF fusion
+├── ingestion.py           # Multi-vector pipeline
+├── llm_client.py          # Qwen3-VL integration
+├── embeddings.py          # Voyage API client
+├── reranking.py           # Voyage Rerank-2
+├── escalation.py          # Handoff logic
+├── config.py              # Centralized configuration
+├── static/
+│   ├── index.html         # Single-page UI
+│   ├── css/chat.css       # FF-themed styling
+│   └── js/chat.js         # Carousel + streaming logic
+└── system_design.md       # Architecture documentation
+```
+
+## Documentation
+
+- **System Design:** See [system_design.md](system_design.md) for detailed architecture
+- **Configuration:** Model tiers, thresholds, and settings in `config.py`
+- **API Usage:** Track token consumption via `/usage` endpoint

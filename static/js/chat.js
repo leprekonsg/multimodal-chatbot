@@ -7,6 +7,13 @@ let uxConfig = null;
 let relevanceThreshold = 0.0; // Default: show all components
 let currentSourceImages = null; // Store for threshold updates
 
+// Carousel State
+let carouselState = {
+    images: [],           // All images from source
+    currentIndex: 0,
+    totalImages: 0
+};
+
 // API Base URL
 const API_BASE = window.location.origin;
 
@@ -26,6 +33,7 @@ const modalTitle = document.getElementById('modalTitle');
 const modalImage = document.getElementById('modalImage');
 const modalContainer = document.getElementById('modalContainer');
 const modalLegend = document.getElementById('modalLegend');
+const carouselStrip = document.getElementById('carouselStrip');
 
 // Load UX config on page load
 async function loadUXConfig() {
@@ -167,19 +175,76 @@ function toggleSourcesPanel() {
     panel.classList.toggle('mobile-visible');
 }
 
-// Modal Functions
-function openImageModal(source) {
-    modalTitle.textContent = source.title || 'Image View';
-    modalImage.src = source.url;
-    
+// Modal Functions - Enhanced with Carousel
+function openImageModal(source, startIndex = 0) {
+    // If source is a single object, treat as single-image carousel
+    // Otherwise, expect array of images from same document
+    if (!Array.isArray(source)) {
+        // Single image - check if there are other images from same document
+        // For now, wrap in array
+        carouselState.images = [source];
+        carouselState.currentIndex = 0;
+    } else {
+        carouselState.images = source;
+        carouselState.currentIndex = startIndex;
+    }
+    carouselState.totalImages = carouselState.images.length;
+
+    renderCarouselUI();
+    updateCarouselPosition();
+
+    imageModal.classList.add('active');
+    imageModal.style.display = 'flex';
+}
+
+function renderCarouselUI() {
+    const currentSource = carouselState.images[carouselState.currentIndex];
+
+    modalTitle.textContent = currentSource.title || 'Image View';
+    modalImage.src = currentSource.url;
+
     // Clear previous overlays (keep the image)
     const existingOverlays = modalContainer.querySelectorAll('.bbox-overlay');
     existingOverlays.forEach(el => el.remove());
 
+    // Clear previous navigation elements
+    const existingNav = modalContainer.querySelectorAll('.carousel-nav, .carousel-counter');
+    existingNav.forEach(el => el.remove());
+
+    // Add navigation arrows if multiple images
+    if (carouselState.totalImages > 1) {
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'carousel-nav prev';
+        prevBtn.setAttribute('aria-label', 'Previous image (← or click)');
+        prevBtn.setAttribute('title', 'Previous image (←)');
+        prevBtn.onclick = (e) => { e.stopPropagation(); navigateCarousel(-1); };
+
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'carousel-nav next';
+        nextBtn.setAttribute('aria-label', 'Next image (→ or click)');
+        nextBtn.setAttribute('title', 'Next image (→)');
+        nextBtn.onclick = (e) => { e.stopPropagation(); navigateCarousel(1); };
+
+        modalContainer.appendChild(prevBtn);
+        modalContainer.appendChild(nextBtn);
+
+        // Add page counter
+        const counter = document.createElement('div');
+        counter.className = 'carousel-counter';
+        counter.textContent = `${carouselState.currentIndex + 1} / ${carouselState.totalImages}`;
+        modalContainer.appendChild(counter);
+
+        // Render thumbnail strip
+        renderThumbnailStrip();
+    } else {
+        // Hide thumbnail strip for single image
+        if (carouselStrip) carouselStrip.style.display = 'none';
+    }
+
     // Render Bounding Boxes with relevance-based visual hierarchy
-    if (source.components && source.components.length > 0) {
+    if (currentSource.components && currentSource.components.length > 0) {
         // Filter by threshold
-        const visibleComponents = source.components.filter(c =>
+        const visibleComponents = currentSource.components.filter(c =>
             (c.relevance_score || 0) >= relevanceThreshold
         );
 
@@ -202,15 +267,19 @@ function openImageModal(source) {
                 el.style.borderColor = visualTier.color;
                 el.style.borderWidth = visualTier.border_width + 'px';
                 el.style.opacity = '1'; // Always visible in modal
-                el.style.backgroundColor = `${visualTier.color}20`;
+                // Background color handled by CSS hover state
 
-                el.innerHTML = `<span class="bbox-label" style="background:${visualTier.color};color:#1a1a1a;font-size:${visualTier.font_size};font-weight:${visualTier.font_weight};">${c.label || ''}</span>`;
+                el.innerHTML = `<span class="bbox-label" style="background:${visualTier.color};color:#1a1a1a;">${c.label || ''}</span>`;
                 modalContainer.appendChild(el);
             }
         });
     }
-    
-    // Render Legend - show only visible components
+
+    // Render Legend - show only visible components with toggle functionality
+    renderLegend(currentSource);
+}
+
+function renderLegend(source) {
     modalLegend.innerHTML = '';
     if (source.components && source.components.length > 0) {
         const visibleComponents = source.components.filter(c =>
@@ -224,16 +293,108 @@ function openImageModal(source) {
 
             const item = document.createElement('div');
             item.className = 'legend-item';
+            item.setAttribute('data-component-index', i);
             item.innerHTML = `
                 <div class="legend-color" style="background: ${visualTier.color}"></div>
                 <span>${c.label || c.type} <span style="color: var(--text-muted); font-size: 11px;">(${relevancePercent}%)</span></span>
             `;
+
+            // Add click to toggle visibility
+            item.onclick = () => toggleComponentVisibility(i);
+
             modalLegend.appendChild(item);
         });
     }
+}
 
-    imageModal.classList.add('active');
-    imageModal.style.display = 'flex';
+function toggleComponentVisibility(componentIndex) {
+    const bbox = modalContainer.querySelectorAll('.bbox-overlay')[componentIndex];
+    const legendItem = modalLegend.querySelectorAll('.legend-item')[componentIndex];
+
+    if (bbox && legendItem) {
+        bbox.classList.toggle('hidden');
+        legendItem.classList.toggle('hidden');
+    }
+}
+
+function updateCarouselPosition() {
+    // Update counter with flash animation
+    const counter = modalContainer.querySelector('.carousel-counter');
+    if (counter) {
+        counter.classList.add('updated');
+        counter.textContent = `${carouselState.currentIndex + 1} / ${carouselState.totalImages}`;
+        setTimeout(() => counter.classList.remove('updated'), 300);
+    }
+}
+
+function navigateCarousel(direction) {
+    const newIndex = carouselState.currentIndex + direction;
+
+    // Wrap around
+    if (newIndex < 0) {
+        carouselState.currentIndex = carouselState.totalImages - 1;
+    } else if (newIndex >= carouselState.totalImages) {
+        carouselState.currentIndex = 0;
+    } else {
+        carouselState.currentIndex = newIndex;
+    }
+
+    // Add slide animation class to image
+    modalImage.classList.add(direction > 0 ? 'slide-left' : 'slide-right');
+
+    setTimeout(() => {
+        renderCarouselUI();
+        updateCarouselPosition();
+        modalImage.classList.remove('slide-left', 'slide-right');
+    }, 300);
+}
+
+function jumpToImage(index) {
+    if (index >= 0 && index < carouselState.totalImages) {
+        carouselState.currentIndex = index;
+        renderCarouselUI();
+        updateCarouselPosition();
+    }
+}
+
+function renderThumbnailStrip() {
+    if (!carouselStrip) return;
+
+    carouselStrip.innerHTML = '';
+    carouselStrip.style.display = 'flex';
+
+    carouselState.images.forEach((img, index) => {
+        const thumb = document.createElement('div');
+        thumb.className = 'strip-thumb' + (index === carouselState.currentIndex ? ' active' : '');
+        thumb.setAttribute('data-index', index);
+        thumb.setAttribute('title', `${index + 1}. ${img.title || 'Image'} (Press ${index + 1})`);
+
+        // Create thumbnail image
+        const thumbImg = document.createElement('img');
+        thumbImg.src = img.url;
+        thumbImg.alt = img.title || `Image ${index + 1}`;
+        thumb.appendChild(thumbImg);
+
+        // Add index number overlay
+        const indexBadge = document.createElement('span');
+        indexBadge.className = 'thumb-index';
+        indexBadge.textContent = index + 1;
+        thumb.appendChild(indexBadge);
+
+        // Click to jump to image
+        thumb.onclick = (e) => {
+            e.stopPropagation();
+            jumpToImage(index);
+        };
+
+        carouselStrip.appendChild(thumb);
+    });
+
+    // Scroll active thumbnail into view
+    const activeThumb = carouselStrip.querySelector('.strip-thumb.active');
+    if (activeThumb) {
+        activeThumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
 }
 
 function closeImageModal() {
@@ -241,9 +402,37 @@ function closeImageModal() {
     imageModal.classList.remove('active');
 }
 
-// Close on Escape key
+// Enhanced keyboard navigation for modal and carousel
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeImageModal();
+    // Only handle if modal is active
+    if (!imageModal.classList.contains('active')) return;
+
+    switch(e.key) {
+        case 'Escape':
+            closeImageModal();
+            break;
+        case 'ArrowLeft':
+            if (carouselState.totalImages > 1) {
+                e.preventDefault();
+                navigateCarousel(-1);
+            }
+            break;
+        case 'ArrowRight':
+            if (carouselState.totalImages > 1) {
+                e.preventDefault();
+                navigateCarousel(1);
+            }
+            break;
+        case '1': case '2': case '3': case '4': case '5':
+        case '6': case '7': case '8': case '9':
+            // Quick jump to thumbnail (1-indexed)
+            const imageIndex = parseInt(e.key) - 1;
+            if (imageIndex < carouselState.totalImages) {
+                e.preventDefault();
+                jumpToImage(imageIndex);
+            }
+            break;
+    }
 });
 
 // Close on click outside
@@ -684,11 +873,15 @@ function updateSources(sources, sourceImages) {
         
         if (source.url) {
             card.style.cursor = 'pointer';
-            // Pass the full source object to the modal function
-            // We need to attach the event listener properly since we're creating elements dynamically
-            card.addEventListener('click', () => openImageModal(source));
+            // Pass ALL source images for carousel navigation, with current index
+            // This enables prev/next navigation in the modal
+            card.addEventListener('click', () => {
+                // Filter to only images with URLs for carousel
+                const allImages = displaySources.filter(s => s.url);
+                openImageModal(allImages, index);
+            });
         }
-        
+
         sourcesList.appendChild(card);
     });
 }
@@ -923,8 +1116,11 @@ async function sendMessage() {
     }
 }
 
-// Keyboard Shortcuts
+// General Keyboard Shortcuts (non-modal)
 document.addEventListener('keydown', (e) => {
+    // Skip if modal is active (handled by modal-specific handler)
+    if (imageModal && imageModal.classList.contains('active')) return;
+
     // Cmd/Ctrl + Enter = Send message
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -941,14 +1137,6 @@ document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
         e.preventDefault();
         document.getElementById('fileInput').click();
-    }
-
-    // Escape = Close modal or dismiss warning
-    if (e.key === 'Escape') {
-        const modal = document.getElementById('imageModal');
-        if (modal && modal.classList.contains('active')) {
-            closeImageModal();
-        }
     }
 });
 

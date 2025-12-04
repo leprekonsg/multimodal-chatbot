@@ -1478,3 +1478,414 @@ body {
     0%, 50% { opacity: 1; }
     51%, 100% { opacity: 0; }
 }
+
+/* ========================================
+   CAROUSEL NAVIGATION - FF 8-BIT STYLE
+   ======================================== */
+
+/* FF-style arrow buttons */
+.carousel-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 48px;
+    height: 64px;
+    background: var(--ff-blue-mid);
+    border: 4px solid var(--ff-border-outer);
+    box-shadow:
+        inset -2px -2px 0 var(--ff-shadow),
+        inset 2px 2px 0 var(--ff-border-inner),
+        4px 4px 0 var(--ff-shadow);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    transition: none;
+}
+
+.carousel-nav:hover {
+    background: var(--ff-blue-light);
+    border-color: var(--ff-gold);
+}
+
+.carousel-nav::before {
+    content: '';
+    width: 0;
+    height: 0;
+    border-style: solid;
+}
+
+.carousel-nav.prev {
+    left: var(--px-4);
+}
+
+.carousel-nav.prev::before {
+    border-width: 10px 14px 10px 0;
+    border-color: transparent var(--ff-gold) transparent transparent;
+}
+
+.carousel-nav.next {
+    right: var(--px-4);
+}
+
+.carousel-nav.next::before {
+    border-width: 10px 0 10px 14px;
+    border-color: transparent transparent transparent var(--ff-gold);
+}
+
+/* 8-bit button press - instant, no easing */
+.carousel-nav:active {
+    transform: translateY(-50%) translate(2px, 2px);
+    box-shadow:
+        inset 2px 2px 0 var(--ff-shadow),
+        inset -2px -2px 0 var(--ff-border-inner),
+        2px 2px 0 var(--ff-shadow);
+}
+
+/* Sound effect indicator (visual pulse) */
+.carousel-nav:active::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
+    border: 2px solid var(--ff-gold);
+    animation: button-ring 0.2s steps(3) forwards;
+    pointer-events: none;
+}
+
+@keyframes button-ring {
+    0% {
+        transform: scale(0.8);
+        opacity: 1;
+    }
+    100% {
+        transform: scale(1.3);
+        opacity: 0;
+    }
+}
+
+/* Page counter (FF style) */
+.carousel-counter {
+    position: absolute;
+    top: var(--px-4);
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-pixel);
+    font-size: 12px;
+    color: var(--ff-gold);
+    text-shadow: 2px 2px 0 var(--ff-shadow);
+    padding: var(--px-2) var(--px-4);
+    background: var(--ff-blue-dialog);
+    border: 3px solid var(--ff-border-outer);
+    box-shadow:
+        inset 0 0 0 2px var(--ff-border-inner),
+        3px 3px 0 var(--ff-shadow);
+    z-index: 100;
+}
+
+/* Counter update flash */
+@keyframes counter-flash {
+    0%, 100% {
+        color: var(--ff-gold);
+    }
+    50% {
+        color: var(--ff-white);
+        text-shadow: 0 0 8px var(--ff-gold), 2px 2px 0 var(--ff-shadow);
+    }
+}
+
+.carousel-counter.updated {
+    animation: counter-flash 0.3s steps(2);
+}
+
+/* Pixel-slide transitions (no smooth easing) */
+@keyframes slide-left {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-25%); opacity: 0.8; }
+    50% { transform: translateX(-50%); opacity: 0.5; }
+    75% { transform: translateX(-75%); opacity: 0.2; }
+    100% { transform: translateX(-100%); opacity: 0; }
+}
+
+@keyframes slide-right {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(25%); opacity: 0.8; }
+    50% { transform: translateX(50%); opacity: 0.5; }
+    75% { transform: translateX(75%); opacity: 0.2; }
+    100% { transform: translateX(100%); opacity: 0; }
+}
+
+.image-modal-container img.slide-left {
+    animation: slide-left 0.3s steps(4) forwards;
+}
+
+.image-modal-container img.slide-right {
+    animation: slide-right 0.3s steps(4) forwards;
+}
+
+/* Modal open sequence - CRT scanline fade in */
+@keyframes modal-backdrop-in {
+    0% {
+        opacity: 0;
+    }
+    50% {
+        opacity: 0.5;
+    }
+    100% {
+        opacity: 1;
+    }
+}
+
+.image-modal.active {
+    animation: modal-backdrop-in 0.4s steps(4);
+}
+
+/* Image container - pixel unfold */
+@keyframes modal-image-unfold {
+    0% {
+        clip-path: inset(50% 50% 50% 50%);
+        opacity: 0;
+    }
+    25% {
+        clip-path: inset(40% 40% 40% 40%);
+        opacity: 0.3;
+    }
+    50% {
+        clip-path: inset(20% 20% 20% 20%);
+        opacity: 0.6;
+    }
+    75% {
+        clip-path: inset(5% 5% 5% 5%);
+        opacity: 0.9;
+    }
+    100% {
+        clip-path: inset(0% 0% 0% 0%);
+        opacity: 1;
+    }
+}
+
+.image-modal.active .image-modal-container img {
+    animation: modal-image-unfold 0.6s steps(8);
+}
+
+/* Staggered bounding box appearance */
+@keyframes bbox-draw {
+    0% {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+    50% {
+        opacity: 0.5;
+        transform: scale(0.95);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.bbox-overlay {
+    animation: bbox-draw 0.4s steps(8) forwards;
+}
+
+.bbox-overlay:nth-child(2) { animation-delay: 0.05s; }
+.bbox-overlay:nth-child(3) { animation-delay: 0.1s; }
+.bbox-overlay:nth-child(4) { animation-delay: 0.15s; }
+.bbox-overlay:nth-child(5) { animation-delay: 0.2s; }
+.bbox-overlay:nth-child(6) { animation-delay: 0.25s; }
+.bbox-overlay:nth-child(7) { animation-delay: 0.3s; }
+.bbox-overlay:nth-child(8) { animation-delay: 0.35s; }
+
+/* ========================================
+   IMPROVED BOUNDING BOX LABELS
+   ======================================== */
+
+/* Override the default bbox-overlay background to be more subtle */
+.image-modal-container .bbox-overlay {
+    background-color: transparent !important;
+    border-style: solid;
+}
+
+/* Show subtle fill on hover only */
+.image-modal-container .bbox-overlay:hover {
+    background-color: rgba(255, 213, 79, 0.15) !important;
+}
+
+/* Ensure labels are positioned correctly - DEFAULT position */
+.image-modal-container .bbox-label {
+    position: absolute;
+    top: -22px;
+    left: 0;
+    padding: 2px 6px;
+    white-space: nowrap;
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    font-weight: 400;
+    box-shadow: 2px 2px 0 var(--ff-shadow);
+    transition: none;
+    border: 1px solid currentColor;
+    pointer-events: auto;
+    cursor: pointer;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    z-index: 10;
+}
+
+/* Auto-position labels to avoid overlap - alternating positions */
+.image-modal-container .bbox-overlay:nth-child(3n) .bbox-label {
+    top: auto;
+    bottom: -22px;
+    left: auto;
+    right: 0;
+}
+
+.image-modal-container .bbox-overlay:nth-child(3n+1) .bbox-label {
+    top: -22px;
+    left: 0;
+}
+
+.image-modal-container .bbox-overlay:nth-child(3n+2) .bbox-label {
+    top: -22px;
+    left: auto;
+    right: 0;
+}
+
+/* Hover to expand and show full text */
+.image-modal-container .bbox-label:hover {
+    z-index: 200;
+    max-width: none;
+    overflow: visible;
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5), 2px 2px 0 var(--ff-shadow);
+}
+
+/* ========================================
+   ENHANCED LEGEND BAR
+   ======================================== */
+
+.image-modal-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--px-3);
+    margin-top: var(--space-lg);
+    padding: var(--px-4);
+    background: linear-gradient(180deg, var(--ff-blue-mid) 0%, var(--ff-blue-dialog) 100%);
+    border: 4px solid var(--ff-border-outer);
+    box-shadow:
+        inset 0 0 0 2px var(--ff-border-inner),
+        4px 4px 0 var(--ff-shadow);
+    max-width: 1200px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: var(--px-2);
+    font-family: var(--font-dialog);
+    font-size: 14px;
+    color: var(--ff-white);
+    padding: var(--px-1) var(--px-2);
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: none;
+}
+
+.legend-item:hover {
+    border-color: var(--ff-gold);
+    background: rgba(255, 213, 79, 0.1);
+    transform: translate(-1px, -1px);
+}
+
+/* Toggle visibility per element type */
+.legend-item.hidden {
+    opacity: 0.4;
+    text-decoration: line-through;
+}
+
+.bbox-overlay.hidden {
+    display: none;
+}
+
+/* ========================================
+   THUMBNAIL STRIP - FF STYLE
+   ======================================== */
+
+.carousel-strip {
+    display: none; /* Hidden by default, shown when multiple images */
+    gap: var(--px-2);
+    padding: var(--px-3);
+    background: var(--ff-blue-deep);
+    border-top: 4px solid var(--ff-border-outer);
+    overflow-x: auto;
+    scrollbar-width: none;
+    justify-content: center;
+    flex-wrap: wrap;
+    max-width: 1200px;
+    margin-top: var(--px-2);
+}
+
+.carousel-strip::-webkit-scrollbar {
+    display: none;
+}
+
+.strip-thumb {
+    position: relative;
+    width: 80px;
+    height: 60px;
+    border: 3px solid var(--ff-border-outer);
+    opacity: 0.6;
+    cursor: pointer;
+    transition: none;
+    box-shadow: 2px 2px 0 var(--ff-shadow);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.strip-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    image-rendering: pixelated;
+}
+
+.strip-thumb:hover {
+    opacity: 0.9;
+    border-color: var(--ff-gold-dim);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--ff-shadow);
+}
+
+.strip-thumb.active {
+    opacity: 1;
+    border-color: var(--ff-gold);
+    box-shadow:
+        0 0 0 2px var(--ff-gold),
+        3px 3px 0 var(--ff-shadow);
+}
+
+/* Index badge on thumbnail */
+.thumb-index {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    background: var(--ff-blue-dialog);
+    color: var(--ff-gold);
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    padding: 1px 4px;
+    border: 1px solid var(--ff-border-outer);
+}
+
+.strip-thumb.active .thumb-index {
+    background: var(--ff-gold);
+    color: var(--ff-blue-deep);
+    border-color: var(--ff-gold-dim);
+}
+
+/* Keyboard hint in counter */
+.carousel-counter::after {
+    content: ' (←→)';
+    font-size: 9px;
+    opacity: 0.7;
+}
