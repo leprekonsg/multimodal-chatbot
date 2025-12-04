@@ -25,16 +25,22 @@ class VoyageConfig:
 class RerankConfig:
     """
     Voyage Rerank 2 configuration.
-    
+
     Research Evidence:
     - 20-48% accuracy improvement (Databricks)
     - Optimal pipeline: Retrieve 50 → Rerank → Top 5 to LLM
+
+    Rate Limits (without payment method): 3 RPM, 10K TPM
+    Rate Limits (with payment method): 2000 RPM, 2M TPM
+
+    If you're hitting 429 errors, either:
+    1. Add payment method to Voyage AI (recommended)
+    2. Set enabled=False to disable reranking (system will use semantic boosting fallback)
     """
-    enabled: bool = True
+    enabled: bool = True  # Set to False if hitting rate limits without payment method
     model_name: str = "rerank-2"  # Voyage Rerank 2
     top_k: int = 5  # Final results to LLM
     candidates_to_rerank: int = 50  # Candidates from hybrid search
-    # Set to False to disable reranking (e.g., for latency-critical use cases)
     # Reranking adds ~300-600ms but significantly improves precision
 
 @dataclass
@@ -42,9 +48,13 @@ class QwenConfig:
     api_key: str = field(default_factory=lambda: get_env("DASHSCOPE_API_KEY", required=True))
     # Standard OpenAI-compatible endpoint for Alibaba Cloud
     base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    caption_max_tokens: int = 500  # Increased for Qwen3's better detail
+    caption_max_tokens: int = 1200  # Sufficient for text-heavy technical manuals with full OCR transcription
     max_output_tokens: int = 2000
     enable_thinking_default: bool = True # Qwen3-VL-Plus supports thinking
+
+    # Model selection for different tasks
+    ingestion_caption_model: str = "flash"  # Options: "flash" (fast), "instruct_235b" (accurate)
+    query_caption_model: str = "instruct_235b"  # For query enrichment - accuracy critical!
 
 @dataclass
 class QdrantConfig:
@@ -171,6 +181,18 @@ class ModelTier(Enum):
     FLASH = "qwen3-vl-flash"  # Fast, cheap, great for captioning
     PLUS = "qwen3-vl-plus"    # Powerful, supports thinking mode
     TURBO = "qwen-turbo"      # Text-only, cheapest for metadata tasks
+    INSTRUCT_235B = "qwen3-vl-235b-a22b-instruct"  # 235B params, best accuracy for technical diagrams
+
+    @classmethod
+    def from_config_string(cls, config_str: str) -> 'ModelTier':
+        """Map config string to ModelTier enum."""
+        mapping = {
+            "flash": cls.FLASH,
+            "plus": cls.PLUS,
+            "turbo": cls.TURBO,
+            "instruct_235b": cls.INSTRUCT_235B
+        }
+        return mapping.get(config_str.lower(), cls.FLASH)
 
 @dataclass
 class AppConfig:

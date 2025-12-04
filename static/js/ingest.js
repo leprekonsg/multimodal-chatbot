@@ -104,12 +104,12 @@ function renderQueue() {
         queueSection.style.display = 'none';
         return;
     }
-    
+
     queueSection.style.display = 'block';
     queueItems.innerHTML = uploadQueue.map(item => {
         const type = getFileType(item.file.name);
         const statusClass = `status-${item.status}`;
-        
+
         return `
             <div class="queue-item" data-id="${item.id}">
                 <div class="queue-item-icon ${type}">${icons[type]}</div>
@@ -126,7 +126,14 @@ function renderQueue() {
                     ${item.status === 'processing' ? '<div class="spinner"></div>' : ''}
                     <span class="status-text">${item.message || item.status}</span>
                 </div>
-                ${item.status === 'done' || item.status === 'error' ? `
+                ${item.status === 'processing' ? `
+                    <button class="queue-item-cancel" onclick="cancelIngestion(${item.id})" title="Stop after current page">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                        </svg>
+                    </button>
+                ` : ''}
+                ${item.status === 'done' || item.status === 'error' || item.status === 'cancelled' ? `
                     <button class="queue-item-remove" onclick="removeFromQueue(${item.id})">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M6 18L18 6M6 6l12 12"/>
@@ -142,6 +149,16 @@ function renderQueue() {
 function removeFromQueue(id) {
     uploadQueue = uploadQueue.filter(item => item.id !== id);
     renderQueue();
+}
+
+// Cancel ongoing ingestion
+function cancelIngestion(id) {
+    const item = uploadQueue.find(i => i.id === id);
+    if (item && item.abortController) {
+        item.abortController.abort();
+        item.message = 'Stopping after current page...';
+        renderQueue();
+    }
 }
 
 // Update specific item in queue (avoids full re-render)
@@ -165,19 +182,21 @@ function updateItemProgress(id, progress, message) {
 async function processQueue() {
     const pending = uploadQueue.find(item => item.status === 'pending');
     if (!pending) return;
-    
+
     pending.status = 'processing';
     pending.message = 'Uploading...';
+    pending.abortController = new AbortController(); // Add abort controller
     renderQueue();
-    
+
     try {
         const formData = new FormData();
         formData.append('file', pending.file);
-        
-        // Use fetch with stream reader
+
+        // Use fetch with stream reader and abort signal
         const response = await fetch(`${API_BASE}/ingest/file`, {
             method: 'POST',
-            body: formData
+            body: formData,
+            signal: pending.abortController.signal // Add abort signal
         });
 
         if (!response.ok) throw new Error(`Server Error: ${response.status}`);
@@ -189,18 +208,18 @@ async function processQueue() {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
+
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            
+
             // Process all complete lines
-            buffer = lines.pop(); 
-            
+            buffer = lines.pop();
+
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
                     const data = JSON.parse(line);
-                    
+
                     if (data.type === 'progress') {
                         // Update progress bar
                         // Map 0-100% processing to 20-100% total (first 20% is upload)
@@ -211,7 +230,7 @@ async function processQueue() {
                         pending.status = 'done';
                         pending.message = 'Complete';
                         pending.progress = 100;
-                        
+
                         // Add to recent
                         if (data.docs) {
                             data.docs.forEach(doc => {
@@ -222,6 +241,12 @@ async function processQueue() {
                             });
                             renderRecent();
                         }
+                    } else if (data.type === 'cancelled') {
+                        // User cancelled ingestion
+                        pending.status = 'cancelled';
+                        pending.message = `Stopped (${data.pages_completed || 0} pages saved)`;
+                        pending.progress = 100;
+                        showToast(`${pending.file.name}: ${data.message}`, 'warning');
                     } else if (data.type === 'error') {
                         throw new Error(data.message);
                     }
@@ -230,25 +255,35 @@ async function processQueue() {
                 }
             }
         }
-        
+
         // If we finished stream without explicit complete message (legacy backend support)
         if (pending.status === 'processing') {
             pending.status = 'done';
             pending.message = 'Complete';
             pending.progress = 100;
         }
-        
+
         renderQueue();
-        showToast(`${pending.file.name} ingested successfully`);
-        
+        if (pending.status === 'done') {
+            showToast(`${pending.file.name} ingested successfully`);
+        }
+
     } catch (error) {
-        console.error(error);
-        pending.status = 'error';
-        pending.message = error.message || 'Failed';
-        renderQueue();
-        showToast(`Failed to ingest ${pending.file.name}`, 'error');
+        // Check if error was due to abort
+        if (error.name === 'AbortError') {
+            pending.status = 'cancelled';
+            pending.message = 'Cancelled by user';
+            renderQueue();
+            showToast(`${pending.file.name} ingestion cancelled`, 'warning');
+        } else {
+            console.error(error);
+            pending.status = 'error';
+            pending.message = error.message || 'Failed';
+            renderQueue();
+            showToast(`Failed to ingest ${pending.file.name}`, 'error');
+        }
     }
-    
+
     processQueue(); // Process next
 }
 

@@ -107,15 +107,40 @@ sequenceDiagram
 
 ## 4. Retrieval Subsystem
 
-The retrieval engine employs an **Adaptive Query** strategy. It classifies the user intent to dynamically weight different search strategies.
+The retrieval engine employs an **Adaptive Query** strategy with **Query-Side Contextual Enrichment**. It classifies the user intent to dynamically weight different search strategies.
 
-### 4.1 Query Classification
+### 4.1 Query-Side Enrichment (NEW)
+**Problem:** During ingestion, images are captioned and embedded. At query time, user-uploaded images were only embedded visually, creating a semantic gap.
+
+**Solution:** Apply the same contextual enrichment to queries that we apply to documents.
+
+**When Enrichment Triggers:**
+- User uploads an image with a generic/short text query (< 20 words)
+- Query lacks domain-specific terms (no part numbers, technical terms)
+- Query contains vague language ("this", "that", "tell me more")
+
+**Enrichment Process:**
+1. Caption the user's uploaded image using `Qwen3-VL-Flash`
+2. Append caption to query: `{original_query}\n\n[Image shows: {caption}]`
+3. Embed enriched query (now contains semantic context)
+4. Proceed with hybrid search
+
+**Example:**
+- **Before:** `"tell me more about this"` → Generic embedding → Wrong results
+- **After:** `"tell me more about this\n\n[Image shows: single seal and dual seal configurations]"` → Semantic embedding → Correct results
+
+**Impact:**
+- Latency: +1-2s per enriched query
+- Cost: ~400 tokens (Qwen FLASH)
+- Accuracy: Dramatic improvement for generic multimodal queries
+
+### 4.2 Query Classification
 Incoming queries are classified into intents:
 *   `VISUAL_SEARCH`: "What is this?" (Image provided)
 *   `TEXTUAL_SEARCH`: "How do I reset the pump?"
 *   `EXACT_MATCH`: "Find this specific diagram."
 
-### 4.2 Hybrid Search & Fusion
+### 4.3 Hybrid Search & Fusion
 The system executes parallel searches based on intent. Results are aggregated using **Weighted Reciprocal Rank Fusion (RRF)**.
 
 *   **Visual Query:** Weights `image_dense` (2.0) and `exact_hash` (3.0) higher.
@@ -127,28 +152,33 @@ Top-K candidates (default 50) from RRF are passed to a **Cross-Encoder (Voyage R
 *   **Output:** Re-ordered list based on deep semantic relevance.
 *   **Impact:** Filters out "visually similar but semantically irrelevant" results.
 
-### 4.4 Retrieval Flow
+### 4.5 Retrieval Flow
 
 ```mermaid
 graph TD
-    Query[User Query] --> Classifier{Intent Classifier}
-    
+    Query[User Query + Image] --> Enrichment{Query Enrichment Check}
+
+    Enrichment -->|Generic Query| Caption[Caption User Image]
+    Enrichment -->|Specific Query| Classifier{Intent Classifier}
+    Caption --> Enrich[Append Caption to Query]
+    Enrich --> Classifier
+
     Classifier -->|Text| TextPath[Text Search]
     Classifier -->|Image| VisualPath[Visual Search]
-    
+
     subgraph "Parallel Execution"
         TextPath --> Sparse[Sparse Search BM25]
         TextPath --> DenseText[Dense Text Search]
-        
+
         VisualPath --> DenseVis[Dense Visual Search]
         VisualPath --> Hash[Perceptual Hash Search]
     end
-    
+
     Sparse --> Fusion[Weighted RRF Fusion]
     DenseText --> Fusion
     DenseVis --> Fusion
     Hash --> Fusion
-    
+
     Fusion --> Candidates[Top-50 Candidates]
     Candidates --> Reranker[Voyage Cross-Encoder]
     Reranker --> Final[Top-K Context]

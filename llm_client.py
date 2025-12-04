@@ -195,26 +195,62 @@ class QwenClient:
     async def caption_image(
         self,
         image_url: str,
-        detail_level: str = "high"
+        detail_level: str = "high",
+        model_override: str = None
     ) -> str:
-        """Generate detailed caption for image using Qwen3-VL-Flash."""
+        """
+        Generate detailed caption for image.
+
+        Args:
+            image_url: URL or data URI of the image
+            detail_level: "high" or "medium" caption detail
+            model_override: "query" (use query_caption_model) or "ingestion" (use ingestion_caption_model)
+                            If None, defaults to FLASH
+
+        Returns:
+            Caption text
+        """
         # Handle local images
         final_url = self._process_image_url(image_url)
-        
+
         if not final_url:
             raise ValueError(f"Could not resolve local image path for: {image_url}")
-        
+
+        # Select model based on override
+        if model_override == "query":
+            model_tier = ModelTier.from_config_string(config.qwen.query_caption_model)
+            print(f"[Caption] Using query caption model: {model_tier.value}")
+        elif model_override == "ingestion":
+            model_tier = ModelTier.from_config_string(config.qwen.ingestion_caption_model)
+            print(f"[Caption] Using ingestion caption model: {model_tier.value}")
+        else:
+            model_tier = ModelTier.FLASH  # Default
+            print(f"[Caption] Using default model: {model_tier.value}")
+
         if detail_level == "high":
-            prompt = """Describe this image for a search engine. 
+            # For query enrichment: focus on SEMANTIC content, not exhaustive transcription
+            if model_override == "query":
+                prompt = """Describe this technical diagram in 2-3 sentences for semantic search.
+
+Focus on:
+1. What TYPE of component/system is shown (e.g., "seal assembly", "pump configuration", "valve diagram")
+2. Key distinguishing features (e.g., "single vs dual", "cross-sectional view", "exploded view")
+3. Main components visible (e.g., "shaft, housing, O-rings")
+
+DO NOT transcribe dimensions, measurements, or minor labels.
+Be concise and focused on what makes this diagram semantically unique."""
+            else:
+                # For ingestion: more detailed transcription
+                prompt = """Describe this image for a search engine.
 Transcribe ALL visible text, numbers, labels, and axis titles exactly as shown.
 Describe colors, spatial layout, and relationships between elements.
 If this is a chart/diagram, describe the data patterns and trends."""
         else:
             prompt = "Describe this image concisely, noting key objects and text."
-        
+
         try:
             response = await self.client.chat.completions.create(
-                model=ModelTier.FLASH.value,
+                model=model_tier.value,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -432,9 +468,13 @@ Rules:
 
         try:
             print(f"[DEBUG] Stage 1: Getting description...")
-            
+
+            # Use configured ingestion caption model
+            ingestion_model = ModelTier.from_config_string(config.qwen.ingestion_caption_model)
+            print(f"[Structured Caption] Using ingestion model: {ingestion_model.value}")
+
             response = await self.client.chat.completions.create(
-                model=ModelTier.FLASH.value,
+                model=ingestion_model.value,
                 messages=[{
                     "role": "user",
                     "content": [

@@ -4,6 +4,7 @@ REST API for the multimodal RAG chatbot with embedded frontend.
 """
 import os
 import sys
+import asyncio
 import traceback
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -412,29 +413,54 @@ async def ingest_image(
 
 
 @app.post("/ingest/file")
-async def ingest_file(file: UploadFile = File(...)):
-    """Ingest file with streaming progress updates (NDJSON)."""
+async def ingest_file(file: UploadFile = File(...), request: Request = None):
+    """Ingest file with streaming progress updates (NDJSON). Supports graceful cancellation."""
     import tempfile
     import uuid as uuid_mod
     import aiofiles
     import json
-    
+
     async def process_generator():
         temp_path = None
+        cancelled = False
+        pages_completed = 0
         try:
             # 1. Upload Phase
             suffix = Path(file.filename).suffix
             temp_dir = tempfile.gettempdir()
             temp_path = os.path.join(temp_dir, f"upload_{uuid_mod.uuid4()}{suffix}")
-            
+
             async with aiofiles.open(temp_path, 'wb') as f:
                 while content := await file.read(1024 * 1024):
                     await f.write(content)
-            
-            # 2. Processing Phase
+
+            # 2. Processing Phase with cancellation detection
             async for update in ingestion_pipeline.ingest_file_stream(temp_path, metadata={"filename": file.filename}):
+                # Check if client disconnected (cancel button pressed)
+                if request and await request.is_disconnected():
+                    cancelled = True
+                    print(f"[Ingestion] Client disconnected - stopping after {pages_completed} pages")
+                    yield json.dumps({
+                        "type": "cancelled",
+                        "message": f"Ingestion stopped by user after {pages_completed} pages",
+                        "pages_completed": pages_completed
+                    }) + "\n"
+                    break
+
                 yield json.dumps(update) + "\n"
-                
+
+                # Track completed pages
+                if update.get("type") == "progress":
+                    pages_completed = update.get("current", pages_completed)
+
+        except asyncio.CancelledError:
+            # Handle explicit task cancellation
+            print(f"[Ingestion] Task cancelled - {pages_completed} pages completed")
+            yield json.dumps({
+                "type": "cancelled",
+                "message": f"Ingestion cancelled after {pages_completed} pages",
+                "pages_completed": pages_completed
+            }) + "\n"
         except Exception as e:
             print("❌ Error in /ingest/file stream:")
             traceback.print_exc()

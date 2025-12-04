@@ -158,10 +158,11 @@ class ConfidenceCalculator:
     """
     
     # Empirically calibrated thresholds for Voyage embeddings (cosine similarity)
-    COSINE_EXCELLENT = 0.85  # Very strong match
-    COSINE_GOOD = 0.70       # Good match
-    COSINE_MARGINAL = 0.55   # Weak match
-    COSINE_POOR = 0.40       # Unlikely relevant
+    # NOTE: Multimodal retrieval typically has lower scores than text-only
+    COSINE_EXCELLENT = 0.80  # Very strong match (was 0.85)
+    COSINE_GOOD = 0.65       # Good match (was 0.70)
+    COSINE_MARGINAL = 0.48   # Acceptable match for multimodal (was 0.55)
+    COSINE_POOR = 0.35       # Unlikely relevant (was 0.40)
     
     # Cosine-based strategy suffixes (exclude sparse which uses BM25 scoring)
     COSINE_SCORE_KEYS = ["visual_score", "textual_score", "combined_score", "combined_text_score"]
@@ -196,21 +197,27 @@ class ConfidenceCalculator:
         cls,
         documents: List[RetrievedDocumentV2],
         query_intent: QueryIntent,
-        verbose: bool = False
+        verbose: bool = False,
+        enrichment_applied: bool = False,
+        rerank_failed: bool = False
     ) -> float:
         """
         Calculate calibrated confidence score.
-        
+
         Signals used:
         1. Top match score (most important) - uses ACTUAL cosine similarity
         2. Score gap between top results (distinctiveness)
         3. Match type alignment with query intent
         4. Exact match bonus
-        
+        5. Enrichment bonus (when query was enhanced with image caption)
+        6. Reranker penalty (when reranking failed)
+
         Args:
             documents: Retrieved documents (best first)
             query_intent: Classified intent of the query
             verbose: If True, print diagnostic info
+            enrichment_applied: If True, query was enriched with image caption
+            rerank_failed: If True, reranking failed (apply penalty)
         """
         if not documents:
             return 0.0
@@ -246,12 +253,15 @@ class ConfidenceCalculator:
         if len(documents) >= 2:
             doc2_scores = cls._collect_cosine_scores(documents[1])
             doc2_max = max(doc2_scores.values()) if doc2_scores else 0
-            
+
             gap = top_score - doc2_max
-            if gap > 0.15:
-                gap_bonus = 0.08  # Very distinct
-            elif gap > 0.08:
-                gap_bonus = 0.04  # Somewhat distinct
+            # More lenient thresholds for multimodal retrieval
+            if gap > 0.12:
+                gap_bonus = 0.10  # Very distinct (was 0.15/0.08)
+            elif gap > 0.06:
+                gap_bonus = 0.05  # Somewhat distinct (was 0.08/0.04)
+            elif gap > 0.03:
+                gap_bonus = 0.02  # Slight edge
         else:
             # Only one document - give a small bonus for distinctiveness
             gap_bonus = 0.05
@@ -281,59 +291,92 @@ class ConfidenceCalculator:
         exact_bonus = 0.0
         if top_doc.is_exact_match:
             exact_bonus = 0.15  # Strong boost for exact matches
-        
+
+        # 5. Enrichment bonus (query was enhanced with image caption)
+        enrichment_bonus = 0.0
+        if enrichment_applied:
+            # Reward enriched queries that find matches
+            # The caption added valuable semantic context
+            if top_score >= cls.COSINE_GOOD:  # 0.65+
+                enrichment_bonus = 0.10  # Strong match with enrichment
+            elif top_score >= cls.COSINE_MARGINAL:  # 0.48+
+                enrichment_bonus = 0.08  # Decent match with enrichment
+            elif top_score >= cls.COSINE_POOR:  # 0.35+
+                enrichment_bonus = 0.05  # Weak but potentially relevant
+
+            if verbose and enrichment_bonus > 0:
+                print(f"[Confidence] Query enrichment bonus: +{enrichment_bonus:.2f}")
+
+        # 6. Reranker failure penalty
+        rerank_penalty = 0.0
+        if rerank_failed:
+            # Without reranking, precision is lower (but we applied semantic boost as compensation)
+            rerank_penalty = -0.05
+            if verbose:
+                print(f"[Confidence] Reranker unavailable penalty: {rerank_penalty:.2f}")
+
         # Calculate final confidence (cap at 0.95 unless exact match)
-        confidence = base_conf + gap_bonus + intent_bonus + exact_bonus
-        
+        confidence = base_conf + gap_bonus + intent_bonus + exact_bonus + enrichment_bonus + rerank_penalty
+
         # Exact matches can go to 1.0, others cap at 0.95
         max_conf = 1.0 if top_doc.is_exact_match else 0.95
         confidence = min(max_conf, confidence)
-        
+
         # Apply penalty for very low top scores
         if top_score < cls.COSINE_POOR:
             confidence *= 0.7  # Less aggressive penalty
-        
+
         # Diagnostic logging (ASCII only)
         if verbose:
             print(f"[Confidence] Top scores: {top_scores}")
             print(f"[Confidence] Best score: {top_score:.4f} from {top_score_source}")
-            print(f"[Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f}")
+            print(f"[Confidence] Base: {base_conf:.2f} | Gap: +{gap_bonus:.2f} (doc2_max={doc2_max:.4f}) | Intent: +{intent_bonus:.2f} | Exact: +{exact_bonus:.2f} | Enrich: +{enrichment_bonus:.2f} | Rerank: {rerank_penalty:.2f}")
             print(f"[Confidence] Final: {confidence:.2%}")
-        
+
         return confidence
 
 
 class HybridRetrieverV2:
     """
     Enhanced hybrid retrieval with multiple search strategies.
-    
+
     Strategies:
     1. Exact Match: Perceptual hash lookup (instant)
     2. Visual Search: image_dense vector
     3. Textual Search: text_dense vector + sparse
     4. Semantic Search: combined_dense vector
     5. RRF Fusion: Combine all strategies
+    6. Query-Side Enrichment: Caption user images for semantic context
     """
-    
+
     VECTOR_NAMES = {
         "image": "image_dense",
         "text": "text_dense",
         "combined": "combined_dense",
         "sparse": "sparse"
     }
-    
+
     def __init__(self):
         self._client = None
         self.classifier = QueryClassifier()
         self.confidence_calc = ConfidenceCalculator()
         self.hasher = PerceptualHasher()
+        self._llm_client = None  # Lazy-loaded for query captioning
     
     @property
     def client(self) -> AsyncQdrantClient:
         if self._client is None:
             self._client = AsyncQdrantClient(url=config.qdrant.url)
         return self._client
-    
+
+    @property
+    def llm_client(self):
+        """Lazy-load LLM client for query captioning."""
+        if self._llm_client is None:
+            from llm_client import qwen_client
+            self._llm_client = qwen_client
+        return self._llm_client
+
     @property
     def collection_name(self) -> str:
         return f"{config.qdrant.collection_name}_v2"
@@ -342,7 +385,118 @@ class HybridRetrieverV2:
         if self._client:
             await self._client.close()
             self._client = None
-    
+
+    def _should_enrich_query(self, query_text: str, has_image: bool) -> bool:
+        """
+        Determine if query should be enriched with image caption.
+
+        Enrich when:
+        1. User provided an image
+        2. Query text is generic/short (< 20 words)
+        3. Query lacks specific domain terms
+
+        Skip when:
+        - Query already detailed (user knows what they want)
+        - Pure visual search (no text)
+        - Text has specific technical terms
+        """
+        if not has_image:
+            return False
+
+        if not query_text or len(query_text.strip()) < 5:
+            # Very short or empty query → enrich
+            return True
+
+        word_count = len(query_text.split())
+        if word_count > 20:
+            # Long detailed query → skip (user is specific)
+            return False
+
+        # Check for generic/vague language
+        generic_patterns = [
+            "this", "that", "these", "item", "thing", "drawing", "image",
+            "picture", "what is", "tell me", "show me", "describe"
+        ]
+
+        query_lower = query_text.lower()
+        generic_count = sum(1 for pattern in generic_patterns if pattern in query_lower)
+
+        # If query is mostly generic language and short → enrich
+        if generic_count >= 2 and word_count < 15:
+            return True
+
+        # Check if query lacks domain-specific terms
+        # (heuristic: no numbers, no uppercase acronyms, no technical terms)
+        has_numbers = any(c.isdigit() for c in query_text)
+        has_acronyms = any(word.isupper() and len(word) > 1 for word in query_text.split())
+
+        technical_terms = [
+            "valve", "pump", "seal", "bearing", "pressure", "flow",
+            "hydraulic", "pneumatic", "motor", "sensor", "diagram"
+        ]
+        has_technical = any(term in query_lower for term in technical_terms)
+
+        if not has_numbers and not has_acronyms and not has_technical and word_count < 10:
+            # Generic query without technical context → enrich
+            return True
+
+        return False
+
+    async def _enrich_query_with_caption(
+        self,
+        query_text: str,
+        query_image: bytes
+    ) -> str:
+        """
+        Caption the user's uploaded image and enrich the query text.
+
+        This solves the asymmetry problem: during ingestion, we caption images
+        and embed those captions. At query time, we must do the same to create
+        a semantic bridge between the user's image and indexed documents.
+
+        Example:
+            Input:  "tell me more about this"
+            Output: "tell me more about this\n\n[Image shows: Technical diagram
+                     of single seal and dual seal pump configurations with
+                     cross-sectional views and labeled components]"
+        """
+        try:
+            print(f"[Query Enrichment] Captioning user's image to understand semantic content...")
+
+            # Use lightweight caption (not structured) for speed
+            # We only need the description, not bounding boxes
+            from io import BytesIO
+            from PIL import Image
+            import base64
+
+            # Convert bytes to data URI for LLM client
+            img = Image.open(BytesIO(query_image))
+            buffer = BytesIO()
+            img.save(buffer, format='JPEG')
+            b64_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            data_uri = f"data:image/jpeg;base64,{b64_data}"
+
+            # Caption with high detail using 235B model for best accuracy
+            # This is critical for query enrichment - better caption = better retrieval
+            caption = await self.llm_client.caption_image(
+                image_url=data_uri,
+                detail_level="high",
+                model_override="query"  # Use query_caption_model from config
+            )
+
+            # Enrich query
+            enriched_query = f"{query_text}\n\n[Image shows: {caption}]"
+
+            print(f"[Query Enrichment] Generated caption: {caption[:150]}...")
+            print(f"[Query Enrichment] Enriched query length: {len(enriched_query)} chars")
+
+            return enriched_query
+
+        except Exception as e:
+            print(f"[!] Query enrichment failed: {e}")
+            print(f"[Query Enrichment] Falling back to original query")
+            return query_text
+
     async def retrieve(
         self,
         query_text: str = None,
@@ -363,7 +517,23 @@ class HybridRetrieverV2:
         print(f"[Retrieval] Query intent: {query_intent.value}")
         print(f"[Retrieval] Query text: {query_text[:100] if query_text else 'None'}...")
         print(f"[Retrieval] Has image: {query_image is not None}")
-        
+
+        # === QUERY-SIDE ENRICHMENT (Critical for semantic matching) ===
+        # When user uploads an image with generic query text, caption the image
+        # to bridge the semantic gap between visual and textual search.
+        # This mirrors the document-side captioning done during ingestion.
+        original_query_text = query_text
+        enrichment_applied = False
+        if self._should_enrich_query(query_text, query_image is not None):
+            query_text = await self._enrich_query_with_caption(query_text, query_image)
+            enrichment_applied = (query_text != original_query_text)
+            if enrichment_applied:
+                print(f"[Retrieval] Query enrichment ENABLED (generic query detected)")
+            else:
+                print(f"[Retrieval] Query enrichment attempted but failed")
+        else:
+            print(f"[Retrieval] Query enrichment SKIPPED (query is specific or no image)")
+
         # Build filter
         search_filter = None
         if filter_type:
@@ -373,8 +543,8 @@ class HybridRetrieverV2:
                     match=MatchValue(value=filter_type)
                 )]
             )
-        
-        # Generate query embeddings
+
+        # Generate query embeddings (using enriched query for better semantic matching)
         print(f"[Retrieval] Generating query embeddings...")
         query_embeddings = await voyage_embedder_v2.encode_query_adaptive(
             text=query_text,
@@ -478,7 +648,9 @@ class HybridRetrieverV2:
         print(f"[Retrieval] Results per strategy: {{{results_summary}}}")
         
         # === RERANKING STAGE (20-48% accuracy improvement) ===
-        if query_text and len(fused) > 1:
+        # When reranker is unavailable, boost text/combined scores as compensation
+        rerank_failed = False
+        if query_text and len(fused) > 1 and config.rerank.enabled:
             try:
                 print(f"[Retrieval] Reranking {min(len(fused), config.rerank.candidates_to_rerank)} candidates...")
                 fused = await reranker.rerank(
@@ -487,7 +659,23 @@ class HybridRetrieverV2:
                     top_k=top_k
                 )
             except Exception as e:
-                print(f"[!] Reranking failed, using RRF order: {e}")
+                print(f"[!] Reranking failed, using RRF order with boosted weights: {e}")
+                rerank_failed = True
+                # Fallback: Apply score boosting to compensate for missing reranker
+                # Boost textual and combined scores when query has semantic content
+                if enrichment_applied:
+                    print(f"[Retrieval] Applying semantic boost (reranker unavailable + enriched query)")
+                    # Re-weight RRF results to favor semantic matches
+                    for i, (doc_id, score, payload, match_info) in enumerate(fused):
+                        semantic_boost = 1.0
+                        # Boost if we have strong text or combined scores
+                        text_score = match_info.get("textual_score", 0)
+                        combined_score = match_info.get("combined_score", 0)
+                        if max(text_score, combined_score) > 0.45:
+                            semantic_boost = 1.5  # 50% boost for semantic matches
+                        fused[i] = (doc_id, score * semantic_boost, payload, match_info)
+                    # Re-sort after boosting
+                    fused.sort(key=lambda x: x[1], reverse=True)
         
         top_results = fused[:top_k]
         
@@ -514,7 +702,13 @@ class HybridRetrieverV2:
         # Calculate calibrated confidence (with verbose logging if enabled)
         import os
         verbose_confidence = os.environ.get("VERBOSE_USAGE", "1") == "1"
-        confidence = self.confidence_calc.calculate(documents, query_intent, verbose=verbose_confidence)
+        confidence = self.confidence_calc.calculate(
+            documents,
+            query_intent,
+            verbose=verbose_confidence,
+            enrichment_applied=enrichment_applied,
+            rerank_failed=rerank_failed
+        )
         
         retrieval_ms = (time.time() - start_time) * 1000
         

@@ -288,6 +288,7 @@ body {
 .status-processing { color: var(--accent-primary); }
 .status-done { color: var(--sage); }
 .status-error { color: var(--coral); }
+.status-cancelled { color: #FFD54F; }
 
 .spinner {
     width: 16px;
@@ -302,7 +303,7 @@ body {
     to { transform: rotate(360deg); }
 }
 
-.queue-item-remove {
+.queue-item-remove, .queue-item-cancel {
     width: 28px;
     height: 28px;
     border-radius: 50%;
@@ -313,11 +314,22 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: all 0.2s ease;
 }
 
 .queue-item-remove:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+
+.queue-item-cancel {
+    color: #FFD54F;
+}
+
+.queue-item-cancel:hover {
+    background: rgba(255, 213, 79, 0.1);
+    color: #FFEB3B;
+    transform: scale(1.1);
 }
 
 /* Progress Bar */
